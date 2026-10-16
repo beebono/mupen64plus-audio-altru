@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-sdl-audio - sdl_backend.h                                 *
+ *   Mupen64plus-audio-altru - sdl_backend.h                                 *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2017 Bobby Smiles                                       *
  *                                                                         *

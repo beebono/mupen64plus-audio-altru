@@ -1,5 +1,5 @@
 #/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
-# *   Mupen64plus-audio-sdl - Makefile                                      *
+# *   Mupen64plus-audio-altru - Makefile                                      *
 # *   Mupen64Plus homepage: https://mupen64plus.org/                        *
 # *   Copyright (C) 2007-2009 Richard Goedeken                              *
 # *   Copyright (C) 2007-2008 Tillin9                                       *
@@ -19,7 +19,7 @@
 # *   Free Software Foundation, Inc.,                                       *
 # *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
 # * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
-# Makefile for SDL Audio plugin in Mupen64plus
+# Makefile for the altru audio plugin in Mupen64plus
 
 # detect operation system
 UNAME ?= $(shell uname -s)
@@ -177,7 +177,7 @@ ifneq ($(NO_SPEEX), 1)
       SPEEX_LDLIBS += $(shell $(PKG_CONFIG) speexdsp --libs)
     else
       # warn user
-      $(warning No libspeexdsp development libraries found.  Mupen64plus-sdl-audio will be built without speex-* resampler.)
+      $(warning No libspeexdsp development libraries found.  altru will be built without speex-* resampler.)
 	  NO_SPEEX = 1
     endif
   else
@@ -195,7 +195,7 @@ ifneq ($(NO_SRC), 1)
       SRC_CFLAGS += $(shell $(PKG_CONFIG) samplerate --cflags) -DUSE_SRC
       SRC_LDLIBS += $(shell $(PKG_CONFIG) samplerate --libs)
     else
-      $(warning No libsamplerate development libraries found.  Mupen64plus-sdl-audio will be built without src-* resampler.)
+      $(warning No libsamplerate development libraries found.  altru will be built without src-* resampler.)
 	  NO_SRC = 1
     endif
   else
@@ -291,16 +291,16 @@ OBJDIRS = $(dir $(OBJECTS))
 $(shell $(MKDIR) $(OBJDIRS))
 
 # build targets
-TARGET = mupen64plus-audio-sdl$(POSTFIX).$(SO_EXTENSION)
+TARGET = mupen64plus-audio-altru$(POSTFIX).$(SO_EXTENSION)
 
 targets:
 	@echo "Mupen64Plus-audio-sdl makefile. "
 	@echo "  Targets:"
-	@echo "    all           == Build Mupen64Plus SDL audio plugin"
+	@echo "    all           == Build altru audio plugin"
 	@echo "    clean         == remove object files"
 	@echo "    rebuild       == clean and re-build all"
-	@echo "    install       == Install Mupen64Plus SDL audio plugin"
-	@echo "    uninstall     == Uninstall Mupen64Plus SDL audio plugin"
+	@echo "    install       == Install altru audio plugin"
+	@echo "    uninstall     == Uninstall altru audio plugin"
 	@echo "  Options:"
 	@echo "    BITS=32       == build 32-bit binaries on 64-bit machine"
 	@echo "    APIDIR=path   == path to find Mupen64Plus Core headers"

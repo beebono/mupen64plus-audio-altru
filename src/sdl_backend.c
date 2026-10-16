@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-sdl-audio - sdl_backend.c                                 *
+ *   Mupen64plus-audio-altru - sdl_backend.c                                 *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2017 Bobby Smiles                                       *
  *                                                                         *
@@ -41,7 +41,7 @@
 #define SDL_UnlockAudio() SDL_UnlockAudioDevice(sdl_backend->device)
 #define SDL_PauseAudio(A) SDL_PauseAudioDevice(sdl_backend->device, A)
 #define SDL_CloseAudio() SDL_CloseAudioDevice(sdl_backend->device)
-#define SDL_OpenAudio(A, B) ((sdl_backend->device = SDL_OpenAudioDevice(NULL, 0, A, B, 0)) - 1)
+#define SDL_OpenAudio(A, B) ((sdl_backend->device = SDL_OpenAudioDevice(NULL, 0, A, B, 0)) == 0 ? -1 : 0)
 struct sdl_backend
 {
     SDL_AudioDeviceID device;

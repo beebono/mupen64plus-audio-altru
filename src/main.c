@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-sdl-audio - main.c                                        *
+ *   Mupen64plus-audio-altru - main.c                                      *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2007-2009 Richard Goedeken                              *
  *   Copyright (C) 2007-2008 Ebenblues                                     *
@@ -40,10 +40,12 @@
 #include "m64p_types.h"
 
 /* version info */
-#define SDL_AUDIO_PLUGIN_VERSION 0x020600
+#define ALTRU_PLUGIN_VERSION     0x000100
 #define AUDIO_PLUGIN_API_VERSION 0x020000
 #define CONFIG_API_VERSION       0x020100
 #define CONFIG_PARAM_VERSION     1.00
+#define CONFIG_SECTION           "Audio-Altru"
+#define LEGACY_SECTION           "Audio-SDL"
 
 #define VERSION_PRINTF_SPLIT(x) (((x) >> 16) & 0xffff), (((x) >> 8) & 0xff), ((x) & 0xff)
 
@@ -93,6 +95,9 @@ static int VolSDL = SDL_MIX_MAXVOLUME;
 // Muted or not
 static int VolIsMuted = 0;
 /* definitions of pointers to Core config functions */
+ptr_ConfigListSections     ConfigListSections = NULL;
+ptr_ConfigListParameters   ConfigListParameters = NULL;
+ptr_ConfigGetParameterType ConfigGetParameterType = NULL;
 ptr_ConfigOpenSection      ConfigOpenSection = NULL;
 ptr_ConfigDeleteSection    ConfigDeleteSection = NULL;
 ptr_ConfigSetParameter     ConfigSetParameter = NULL;
@@ -124,6 +129,54 @@ void DebugMessage(int level, const char *message, ...)
   va_end(args);
 }
 
+
+static void section_cb(void *ctx, const char *name)
+{
+    struct { const char *want; int found; } *q = ctx;
+    if (strcmp(q->want, name) == 0)
+        q->found = 1;
+}
+
+static int ConfigSectionExists(const char *name)
+{
+    struct { const char *want; int found; } q = { name, 0 };
+    ConfigListSections(&q, section_cb);
+    return q.found;
+}
+
+/* Copies the keys both plugins have in common into Audio-Altru, unless they are already set there. */
+static void SeedFromLegacy(void)
+{
+    static const struct { const char *key; m64p_type type; } keys[] = {
+        { "DEFAULT_FREQUENCY", M64TYPE_INT }, { "SWAP_CHANNELS", M64TYPE_BOOL },
+        { "PRIMARY_BUFFER_SIZE", M64TYPE_INT }, { "PRIMARY_BUFFER_TARGET", M64TYPE_INT },
+        { "SECONDARY_BUFFER_SIZE", M64TYPE_INT }, { "RESAMPLE", M64TYPE_STRING },
+        { "VOLUME_ADJUST", M64TYPE_INT }, { "VOLUME_DEFAULT", M64TYPE_INT }, { "AUDIO_SYNC", M64TYPE_BOOL },
+    };
+    m64p_handle old;
+    size_t i;
+
+    if (ConfigOpenSection(LEGACY_SECTION, &old) != M64ERR_SUCCESS)
+        return;
+    for (i = 0; i < sizeof(keys) / sizeof(keys[0]); i++)
+    {
+        m64p_type t;
+        char str[256];
+        int v;
+        if (ConfigGetParameterType(old, keys[i].key, &t) != M64ERR_SUCCESS || t != keys[i].type)
+            continue;
+        if (ConfigGetParameterType(l_ConfigAudio, keys[i].key, &t) == M64ERR_SUCCESS)
+            continue;
+        if (keys[i].type == M64TYPE_STRING)
+        {
+            if (ConfigGetParameter(old, keys[i].key, M64TYPE_STRING, str, sizeof(str)) == M64ERR_SUCCESS)
+                ConfigSetParameter(l_ConfigAudio, keys[i].key, M64TYPE_STRING, str);
+        }
+        else if (ConfigGetParameter(old, keys[i].key, keys[i].type, &v, sizeof(v)) == M64ERR_SUCCESS)
+            ConfigSetParameter(l_ConfigAudio, keys[i].key, keys[i].type, &v);
+    }
+    DebugMessage(M64MSG_INFO, "Seeded '" CONFIG_SECTION "' from '" LEGACY_SECTION "'");
+}
 
 /* Mupen64Plus plugin functions */
 EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context,
@@ -176,36 +229,33 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Con
         !ConfigGetParamInt   || !ConfigGetParamFloat   || !ConfigGetParamBool   || !ConfigGetParamString)
         return M64ERR_INCOMPATIBLE;
 
-    /* get a configuration section handle */
-    if (ConfigOpenSection("Audio-SDL", &l_ConfigAudio) != M64ERR_SUCCESS)
+    ConfigListSections = (ptr_ConfigListSections) osal_dynlib_getproc(CoreLibHandle, "ConfigListSections");
+    ConfigListParameters = (ptr_ConfigListParameters) osal_dynlib_getproc(CoreLibHandle, "ConfigListParameters");
+    ConfigGetParameterType = (ptr_ConfigGetParameterType) osal_dynlib_getproc(CoreLibHandle, "ConfigGetParameterType");
+    if (!ConfigListSections || !ConfigGetParameterType)
+        return M64ERR_INCOMPATIBLE;
+
+    if (ConfigOpenSection(CONFIG_SECTION, &l_ConfigAudio) != M64ERR_SUCCESS)
     {
-        DebugMessage(M64MSG_ERROR, "Couldn't open config section 'Audio-SDL'");
+        DebugMessage(M64MSG_ERROR, "Couldn't open config section '" CONFIG_SECTION "'");
         return M64ERR_INPUT_NOT_FOUND;
     }
 
-    /* check the section version number */
     if (ConfigGetParameter(l_ConfigAudio, "Version", M64TYPE_FLOAT, &fConfigParamsVersion, sizeof(float)) != M64ERR_SUCCESS)
     {
-        DebugMessage(M64MSG_WARNING, "No version number in 'Audio-SDL' config section. Setting defaults.");
-        ConfigDeleteSection("Audio-SDL");
-        ConfigOpenSection("Audio-SDL", &l_ConfigAudio);
+        /* a fresh section; keys set before startup (--set) stay */
+        if (ConfigSectionExists(LEGACY_SECTION))
+            SeedFromLegacy();
     }
     else if (((int) fConfigParamsVersion) != ((int) CONFIG_PARAM_VERSION))
     {
-        DebugMessage(M64MSG_WARNING, "Incompatible version %.2f in 'Audio-SDL' config section: current is %.2f. Setting defaults.", fConfigParamsVersion, (float) CONFIG_PARAM_VERSION);
-        ConfigDeleteSection("Audio-SDL");
-        ConfigOpenSection("Audio-SDL", &l_ConfigAudio);
-    }
-    else if ((CONFIG_PARAM_VERSION - fConfigParamsVersion) >= 0.0001f)
-    {
-        /* handle upgrades */
-        float fVersion = CONFIG_PARAM_VERSION;
-        ConfigSetParameter(l_ConfigAudio, "Version", M64TYPE_FLOAT, &fVersion);
-        DebugMessage(M64MSG_INFO, "Updating parameter set version in 'Audio-SDL' config section to %.2f", fVersion);
+        DebugMessage(M64MSG_WARNING, "Incompatible version %.2f in '" CONFIG_SECTION "' config section: current is %.2f. Setting defaults.", fConfigParamsVersion, (float) CONFIG_PARAM_VERSION);
+        ConfigDeleteSection(CONFIG_SECTION);
+        ConfigOpenSection(CONFIG_SECTION, &l_ConfigAudio);
     }
 
     /* set the default values for this plugin */
-    ConfigSetDefaultFloat(l_ConfigAudio, "Version",             CONFIG_PARAM_VERSION,  "Mupen64Plus SDL Audio Plugin config parameter version number");
+    ConfigSetDefaultFloat(l_ConfigAudio, "Version",             CONFIG_PARAM_VERSION,  "altru audio plugin config parameter version number");
     ConfigSetDefaultInt(l_ConfigAudio, "DEFAULT_FREQUENCY",     DEFAULT_FREQUENCY,     "Frequency which is used if rom doesn't want to change it");
     ConfigSetDefaultBool(l_ConfigAudio, "SWAP_CHANNELS",        0,                     "Swaps left and right channels");
     ConfigSetDefaultInt(l_ConfigAudio, "PRIMARY_BUFFER_SIZE",   PRIMARY_BUFFER_SIZE,   "Size of primary buffer in output samples. This is where audio is loaded after it's extracted from n64's memory.");
@@ -240,13 +290,13 @@ EXPORT m64p_error CALL PluginGetVersion(m64p_plugin_type *PluginType, int *Plugi
         *PluginType = M64PLUGIN_AUDIO;
 
     if (PluginVersion != NULL)
-        *PluginVersion = SDL_AUDIO_PLUGIN_VERSION;
+        *PluginVersion = ALTRU_PLUGIN_VERSION;
 
     if (APIVersion != NULL)
         *APIVersion = AUDIO_PLUGIN_API_VERSION;
 
     if (PluginNamePtr != NULL)
-        *PluginNamePtr = "Mupen64Plus SDL Audio Plugin";
+        *PluginNamePtr = "altru (mupen64plus-audio-altru)";
 
     if (Capabilities != NULL)
     {
