@@ -32,7 +32,7 @@ and three calls, `get`, `set` and `save_default`, all on plain `int` values.
 **Discovery (suxty side).** As for foir (`src/foir_if.c` in suxty): walk the loaded objects with `dl_iterate_phdr`, take a handle with `dlopen(name, RTLD_NOW | RTLD_NOLOAD)` and `dlsym` for `AltruSuxtyGetInterface`;
 accept it when `abi == ALTRU_SUXTY_ABI`, `size >= sizeof(struct altru_suxty_interface)` and the option count fits. No symbol means another audio plugin and no Audio page.
 
-**Option descriptor.** `key` (the config parameter name), `label` (title case), `help` (one line), `type` (bool 0/1, int with `min`/`max`/`step`, enum 0..`max` with `enum_labels`), `flags` (`ALTRU_OPTF_LIVE`: takes effect at once, otherwise at the next launch), `def`.
+**Option descriptor.** `key` (the config parameter name), `label` (title case), `help` (one line), `type` (bool 0/1, int with `min`/`max`/`step`, enum 0..`max` with `enum_labels`), `flags` (`ALTRU_OPTF_LIVE`: takes effect at once, otherwise at the next launch; `ALTRU_OPTF_PERCENT` / `ALTRU_OPTF_MS`: the int is a percentage / milliseconds, for the menu to show a unit), `def`.
 
 | id | key | label | type | live | default |
 |---|---|---|---|---|---|

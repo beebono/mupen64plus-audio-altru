@@ -38,12 +38,12 @@ static const char *const rs_labels[] = {
 #define RS_COUNT ((int)(sizeof(rs_ids) / sizeof(rs_ids[0])))
 
 static const struct altru_suxty_option l_options[OPT_COUNT] = {
-    [OPT_VOLUME]      = { "VOLUME_DEFAULT", "Volume", "Output volume in percent.", ALTRU_OPT_INT, ALTRU_OPTF_LIVE, 0, 100, 5, NULL, 80 },
+    [OPT_VOLUME]      = { "VOLUME_DEFAULT", "Volume", "Output volume in percent.", ALTRU_OPT_INT, ALTRU_OPTF_LIVE | ALTRU_OPTF_PERCENT, 0, 100, 5, NULL, 80 },
     [OPT_FF_MODE]     = { "FF_MODE", "Fast-Forward Audio", "Play at normal pitch while fast-forwarding, or mute.", ALTRU_OPT_ENUM, ALTRU_OPTF_LIVE, 0, 1, 1, ff_labels, 0 },
     [OPT_SYNC]        = { "AUDIO_SYNC", "Audio Sync", "Delay the core when it runs far ahead of the audio clock.", ALTRU_OPT_BOOL, ALTRU_OPTF_LIVE, 0, 1, 1, NULL, 1 },
     [OPT_RESAMPLER]   = { "RESAMPLE", "Resampler", "Sample rate conversion method.", ALTRU_OPT_ENUM, ALTRU_OPTF_LIVE, 0, RS_COUNT - 1, 1, rs_labels, 0 },
     [OPT_BUFFER_MODE] = { "BUFFER_MODE", "Buffer Size", "Automatic grows on underruns and shrinks slowly; fixed uses Buffer Length.", ALTRU_OPT_ENUM, 0, 0, 1, 1, buf_labels, 0 },
-    [OPT_BUFFER_MS]   = { "BUFFER_MS", "Buffer Length", "Fixed buffer level in milliseconds.", ALTRU_OPT_INT, 0, 20, 300, 10, NULL, 60 },
+    [OPT_BUFFER_MS]   = { "BUFFER_MS", "Buffer Length", "Fixed buffer level in milliseconds.", ALTRU_OPT_INT, ALTRU_OPTF_MS, 20, 300, 10, NULL, 60 },
     [OPT_CONCEAL]     = { "CONCEAL", "Underrun Concealment", "Stretch the audio left in the buffer (pitch kept) instead of going silent when the core falls behind.", ALTRU_OPT_BOOL, ALTRU_OPTF_LIVE, 0, 1, 1, NULL, 1 },
 };
 
