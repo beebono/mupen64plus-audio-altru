@@ -168,42 +168,16 @@ endif
 CFLAGS += $(SDL_CFLAGS)
 LDLIBS += $(SDL_LDLIBS)
 
-# test for presence of speexdsp
-ifneq ($(NO_SPEEX), 1)
-  ifeq ($(origin SPEEX_CFLAGS) $(origin SPEEX_LDLIBS), undefined undefined)
-    ifneq ($(strip $(shell $(PKG_CONFIG) speexdsp --modversion 2> /dev/null)),)
-      # set speexdsp flags and libraries
-      SPEEX_CFLAGS += $(shell $(PKG_CONFIG) speexdsp --cflags) -DUSE_SPEEX
-      SPEEX_LDLIBS += $(shell $(PKG_CONFIG) speexdsp --libs)
-    else
-      # warn user
-      $(warning No libspeexdsp development libraries found.  altru will be built without speex-* resampler.)
-	  NO_SPEEX = 1
-    endif
-  else
-    SPEEX_CFLAGS += -DUSE_SPEEX
-  endif
-  CFLAGS += $(SPEEX_CFLAGS)
-  LDLIBS += $(SPEEX_LDLIBS)
+# optional resamplers, opt-in: USE_SPEEX=1 (libspeexdsp), USE_SRC=1 (libsamplerate)
+ifeq ($(USE_SPEEX), 1)
+  CFLAGS += -DUSE_SPEEX $(shell $(PKG_CONFIG) speexdsp --cflags)
+  LDLIBS += $(shell $(PKG_CONFIG) speexdsp --libs)
 endif
-
-# test for presence of libsamplerate
-ifneq ($(NO_SRC), 1)
-  ifeq ($(origin SRC_CFLAGS) $(origin SRC_LDLIBS), undefined undefined)
-    ifneq ($(strip $(shell $(PKG_CONFIG) samplerate --modversion 2> /dev/null)),)
-      # set libsamplerate flags and libraries
-      SRC_CFLAGS += $(shell $(PKG_CONFIG) samplerate --cflags) -DUSE_SRC
-      SRC_LDLIBS += $(shell $(PKG_CONFIG) samplerate --libs)
-    else
-      $(warning No libsamplerate development libraries found.  altru will be built without src-* resampler.)
-	  NO_SRC = 1
-    endif
-  else
-    SRC_CFLAGS += -DUSE_SRC
-  endif
-  CFLAGS += $(SRC_CFLAGS)
-  LDLIBS += $(SRC_LDLIBS)
+ifeq ($(USE_SRC), 1)
+  CFLAGS += -DUSE_SRC $(shell $(PKG_CONFIG) samplerate --cflags)
+  LDLIBS += $(shell $(PKG_CONFIG) samplerate --libs)
 endif
+LDLIBS += -lm -lpthread
 
 # set mupen64plus core API header path
 ifneq ("$(APIDIR)","")
@@ -266,10 +240,11 @@ endif
 
 # list of source files to compile
 SOURCE = \
-	$(SRCDIR)/circular_buffer.c \
 	$(SRCDIR)/main.c \
 	$(SRCDIR)/sdl_backend.c \
+	$(SRCDIR)/suxty.c \
 	$(SRCDIR)/resamplers/resamplers.c \
+	$(SRCDIR)/resamplers/poly.c \
 	$(SRCDIR)/resamplers/trivial.c
 
 ifeq ($(OS),MINGW)
@@ -278,10 +253,10 @@ else
 SOURCE += $(SRCDIR)/osal_dynamiclib_unix.c
 endif
 
-ifneq ($(NO_SPEEX), 1)
+ifeq ($(USE_SPEEX), 1)
   SOURCE += $(SRCDIR)/resamplers/speex.c
 endif
-ifneq ($(NO_SRC), 1)
+ifeq ($(USE_SRC), 1)
   SOURCE += $(SRCDIR)/resamplers/src.c
 endif
 
@@ -307,9 +282,8 @@ targets:
 	@echo "    OPTFLAGS=flag == compiler optimization (default: -O3 -flto)"
 	@echo "    WARNFLAGS=flag == compiler warning levels (default: -Wall)"
 	@echo "    PIC=(1|0)     == Force enable/disable of position independent code"
-	@echo "    NO_SRC=1      == build without libsamplerate; disables src-* high-quality audio resampling"
-	@echo "    NO_SPEEX=1    == build without libspeexdsp; disables speex-* high-quality audio resampling"
-	@echo "    NO_OSS=1      == build without OSS; disables Open Sound System support"
+	@echo "    USE_SRC=1     == also build the src-* resamplers (libsamplerate)"
+	@echo "    USE_SPEEX=1   == also build the speex-* resamplers (libspeexdsp)"
 	@echo "    POSTFIX=name  == String added to the name of the the build (default: '')"
 	@echo "  Install Options:"
 	@echo "    PREFIX=path   == install/uninstall prefix (default: /usr/local)"

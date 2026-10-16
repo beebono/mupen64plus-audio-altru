@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-audio-altru - src.c                                         *
+ *   Mupen64plus-audio-altru - src.c                                       *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2017 Bobby Smiles                                       *
  *                                                                         *
@@ -31,170 +31,83 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define ARRAY_SIZE(x) sizeof((x)) / sizeof((x)[0])
-
-struct fbuffer
-{
-    float* data;
-    size_t size;
-};
-
-static void grow_fbuffer(struct fbuffer* fbuffer, size_t new_size)
-{
-    if (fbuffer->size < new_size) {
-        fbuffer->data = realloc(fbuffer->data, new_size);
-        fbuffer->size = new_size;
-    }
-}
-
-static void free_fbuffer(struct fbuffer* fbuffer)
-{
-    free(fbuffer->data);
-    fbuffer->data = NULL;
-    fbuffer->size = 0;
-}
-
-
-
-struct src_resampler
+/* Opt-in (USE_SRC=1): libsamplerate through float buffers. */
+struct srcr
 {
     SRC_STATE* state;
-
-    /* 2 intermediate buffers are needed for float/int conversion */
-    struct fbuffer fbuffers[2];
+    float* in;
+    float* out;
+    size_t in_cap, out_cap;
 };
 
-static void* src_init_from_id(const char* resampler_id)
+static void* src_create(const char* id, unsigned in_hz, unsigned out_hz)
 {
+    static const struct { const char* name; int type; } types[] = {
+        { "src-sinc-best-quality", SRC_SINC_BEST_QUALITY }, { "src-sinc-medium-quality", SRC_SINC_MEDIUM_QUALITY },
+        { "src-sinc-fastest", SRC_SINC_FASTEST }, { "src-zero-order-hold", SRC_ZERO_ORDER_HOLD }, { "src-linear", SRC_LINEAR },
+    };
     size_t i;
     int error = 0;
-
-    static const struct {
-        const char* name;
-        int converter_type;
-    } types[] =
-    {
-        { "src-sinc-best-quality", SRC_SINC_BEST_QUALITY },
-        { "src-sinc-medium-quality", SRC_SINC_MEDIUM_QUALITY },
-        { "src-sinc-fastest", SRC_SINC_FASTEST },
-        { "src-zero-order-hold", SRC_ZERO_ORDER_HOLD },
-        { "src-linear",  SRC_LINEAR }
-    };
-
-    /* select resampler configuration */
-    for (i = 0; i < ARRAY_SIZE(types); ++i) {
-        if (strcmp(types[i].name, resampler_id) == 0) {
-            break;
-        }
-    }
-
-    /* handle unknown configuration */
-    if (i >= ARRAY_SIZE(types)) {
-        i = 1;
-
-        DebugMessage(M64MSG_WARNING,
-            "Unknown RESAMPLE configuration %s; use %s resampler",
-            resampler_id, types[i].name);
-    }
-
-    /* init src resampler */
-    struct src_resampler* src_resampler = malloc(sizeof(*src_resampler));
-    if (src_resampler == NULL) {
-        DebugMessage(M64MSG_ERROR, "Failed to allocate memory for SRC resampler");
+    struct srcr* s = calloc(1, sizeof(*s));
+    (void)in_hz; (void)out_hz;
+    if (s == NULL)
+        return NULL;
+    for (i = 0; i < sizeof(types) / sizeof(types[0]) - 1 && strcmp(types[i].name, id) != 0; i++)
+        ;
+    s->state = src_new(types[i].type, 2, &error);
+    if (s->state == NULL) {
+        DebugMessage(M64MSG_ERROR, "SRC error: %s", src_strerror(error));
+        free(s);
         return NULL;
     }
-
-    /* lazy-alloc of fbuffers */
-    memset(src_resampler, 0, sizeof(*src_resampler));
-
-    src_resampler->state = src_new(types[i].converter_type, 2, &error);
-    if (error != 0) {
-        DebugMessage(M64MSG_ERROR, "SRC error: %s", src_strerror(error));
-        free(src_resampler);
-        return NULL;
-    }
-
-    return src_resampler;
+    return s;
 }
 
-static void src_release(void* resampler)
+static void src_release(void* rs)
 {
-    size_t i;
-
-    struct src_resampler* src_resampler = (struct src_resampler*)resampler;
-
-    if (src_resampler == NULL)
-        return;
-
-    src_delete(src_resampler->state);
-
-    for(i = 0; i < 2; ++i) {
-        free_fbuffer(&src_resampler->fbuffers[i]);
+    struct srcr* s = rs;
+    if (s) {
+        src_delete(s->state);
+        free(s->in);
+        free(s->out);
+        free(s);
     }
 }
 
-static size_t src_resample(void* resampler,
-                           const void* src, size_t src_size, unsigned int src_freq,
-                           void* dst, size_t dst_size, unsigned int dst_freq)
+static void src_reset_(void* rs) { src_reset(((struct srcr*)rs)->state); }
+
+static size_t src_process_(void* rs, const int16_t* src, size_t avail, int16_t* dst, size_t want, uint64_t step, size_t* produced)
 {
-    struct src_resampler* src_resampler = (struct src_resampler*)resampler;
+    struct srcr* s = rs;
+    SRC_DATA d;
+    double ratio = (double)RS_ONE / (double)step;
+    size_t in_n = avail;
 
-    /* High quality resamplers needs more input than what
-     * the sample rate ratio would indicate to work properly, hence the src/dst>1 ratio
-     *
-     * Limit src_size to avoid too much short-float-short conversion time
-     */
-    if (src_size > dst_size * 5 / 2) {
-        src_size = dst_size * 5 / 2;
+    /* the sinc converters need more input than the ratio says; cap it to bound the conversion work */
+    if (in_n > want * 5 / 2 + 16)
+        in_n = want * 5 / 2 + 16;
+    if (s->in_cap < in_n * 2) {
+        s->in = realloc(s->in, in_n * 2 * sizeof(float));
+        s->in_cap = in_n * 2;
     }
-
-    /* grow float buffers if necessary */
-    if (src_size > 0) {
-        grow_fbuffer(&src_resampler->fbuffers[0], src_size*2);
+    if (s->out_cap < want * 2) {
+        s->out = realloc(s->out, want * 2 * sizeof(float));
+        s->out_cap = want * 2;
     }
-    if (dst_size > 0) {
-        grow_fbuffer(&src_resampler->fbuffers[1], dst_size*2);
+    src_short_to_float_array(src, s->in, (int)(in_n * 2));
+    memset(&d, 0, sizeof(d));
+    d.data_in = s->in;
+    d.input_frames = (long)in_n;
+    d.data_out = s->out;
+    d.output_frames = (long)want;
+    d.src_ratio = ratio;
+    if (src_process(s->state, &d) != 0) {
+        *produced = 0;
+        return in_n;
     }
-
-    src_short_to_float_array((short*)src, src_resampler->fbuffers[0].data, src_size/2);
-
-    /* perform resampling */
-    SRC_DATA src_data;
-
-    src_data.data_in = src_resampler->fbuffers[0].data;
-    src_data.input_frames = src_size/4;
-
-    src_data.data_out = src_resampler->fbuffers[1].data;
-    src_data.output_frames = dst_size/4;
-
-    src_data.src_ratio = (float)dst_freq / src_freq;
-    src_data.end_of_input = 0;
-
-    int error = src_process(src_resampler->state, &src_data);
-
-    /* in case of error, display error, zero output buffer and discard input buffer */
-    if (error)
-    {
-        DebugMessage(M64MSG_ERROR, "SRC error: %s", src_strerror(error));
-        memset(dst, 0, dst_size);
-        return src_size;
-    }
-
-    if (dst_size != src_data.output_frames_gen*4) {
-        DebugMessage(M64MSG_WARNING, "dst_size = %u != output_frames_gen*4 = %u",
-                (uint32_t) dst_size, (uint32_t) src_data.output_frames_gen*4);
-    }
-
-    src_float_to_short_array(src_resampler->fbuffers[1].data, (short*)dst, src_data.output_frames_gen*2);
-    memset((char*)dst + src_data.output_frames_gen*4, 0, dst_size - src_data.output_frames_gen*4);
-
-    return src_data.input_frames_used * 4;
+    src_float_to_short_array(s->out, dst, (int)(d.output_frames_gen * 2));
+    *produced = (size_t)d.output_frames_gen;
+    return (size_t)d.input_frames_used;
 }
 
-
-const struct resampler_interface g_src_iresampler = {
-    "src",
-    src_init_from_id,
-    src_release,
-    src_resample
-};
+const struct resampler_interface g_src_iresampler = { "src", src_create, src_release, src_reset_, src_process_ };

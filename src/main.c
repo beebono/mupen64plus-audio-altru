@@ -26,6 +26,7 @@
 #include <SDL_audio.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <pthread.h>
 #include <string.h>
 
 #include "main.h"
@@ -36,11 +37,11 @@
 #define M64P_PLUGIN_PROTOTYPES 1
 #include "m64p_common.h"
 #include "m64p_config.h"
+#include "m64p_frontend.h"
 #include "m64p_plugin.h"
 #include "m64p_types.h"
 
 /* version info */
-#define ALTRU_PLUGIN_VERSION     0x000100
 #define AUDIO_PLUGIN_API_VERSION 0x020000
 #define CONFIG_API_VERSION       0x020100
 #define CONFIG_PARAM_VERSION     1.00
@@ -49,31 +50,11 @@
 
 #define VERSION_PRINTF_SPLIT(x) (((x) >> 16) & 0xffff), (((x) >> 8) & 0xff), ((x) & 0xff)
 
-/* Default start-time size of primary buffer (in equivalent output samples).
-   This is the buffer where audio is loaded after it's extracted from n64's memory.
-   This value must be larger than PRIMARY_BUFFER_TARGET */
-#define PRIMARY_BUFFER_SIZE 16384
-
-/* this is the buffer fullness level (in equivalent output samples) which is targeted
-   for the primary audio buffer (by inserting delays) each time data is received from
-   the running N64 program.  This value must be larger than the SECONDARY_BUFFER_SIZE.
-   Decreasing this value will reduce audio latency but requires a faster PC to avoid
-   choppiness. Increasing this will increase audio latency but reduce the chance of
-   drop-outs. The default value 2048 gives a 46ms maximum A/V delay at 44.1khz */
-#define PRIMARY_BUFFER_TARGET 2048
-
-/* Size of secondary buffer, in output samples. This is the requested size of SDL's
-   hardware buffer, and the size of the mix buffer for doing SDL volume control. The
-   SDL documentation states that this should be a power of two between 512 and 8192. */
-#define SECONDARY_BUFFER_SIZE 1024
-
 /* This sets default frequency what is used if rom doesn't want to change it.
    Probably only game that needs this is Zelda: Ocarina Of Time Master Quest
    *NOTICE* We should try to find out why Demos' frequencies are always wrong
    They tend to rely on a default frequency, apparently, never the same one ;)*/
 #define DEFAULT_FREQUENCY 33600
-
-#define SDL_MixAudio(A, B, C, D) SDL_MixAudioFormat(A, B, AUDIO_S16SYS, C, D)
 
 /* local variables */
 static void (*l_DebugCallback)(void *, int, const char *) = NULL;
@@ -82,6 +63,8 @@ static int l_PluginInit = 0;
 static m64p_handle l_ConfigAudio;
 
 static struct sdl_backend* l_sdl_backend = NULL;
+static ptr_CoreDoCommand l_CoreDoCommand = NULL;
+static pthread_t l_EmuThread;
 
 /* Read header for type definition */
 static AUDIO_INFO AudioInfo;
@@ -98,6 +81,7 @@ static int VolIsMuted = 0;
 ptr_ConfigListSections     ConfigListSections = NULL;
 ptr_ConfigListParameters   ConfigListParameters = NULL;
 ptr_ConfigGetParameterType ConfigGetParameterType = NULL;
+ptr_ConfigSaveSection      ConfigSaveSection = NULL;
 ptr_ConfigOpenSection      ConfigOpenSection = NULL;
 ptr_ConfigDeleteSection    ConfigDeleteSection = NULL;
 ptr_ConfigSetParameter     ConfigSetParameter = NULL;
@@ -149,7 +133,6 @@ static void SeedFromLegacy(void)
 {
     static const struct { const char *key; m64p_type type; } keys[] = {
         { "DEFAULT_FREQUENCY", M64TYPE_INT }, { "SWAP_CHANNELS", M64TYPE_BOOL },
-        { "PRIMARY_BUFFER_SIZE", M64TYPE_INT }, { "PRIMARY_BUFFER_TARGET", M64TYPE_INT },
         { "SECONDARY_BUFFER_SIZE", M64TYPE_INT }, { "RESAMPLE", M64TYPE_STRING },
         { "VOLUME_ADJUST", M64TYPE_INT }, { "VOLUME_DEFAULT", M64TYPE_INT }, { "AUDIO_SYNC", M64TYPE_BOOL },
     };
@@ -177,6 +160,8 @@ static void SeedFromLegacy(void)
     }
     DebugMessage(M64MSG_INFO, "Seeded '" CONFIG_SECTION "' from '" LEGACY_SECTION "'");
 }
+
+static void VolumeCommit(void);
 
 /* Mupen64Plus plugin functions */
 EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Context,
@@ -229,10 +214,12 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Con
         !ConfigGetParamInt   || !ConfigGetParamFloat   || !ConfigGetParamBool   || !ConfigGetParamString)
         return M64ERR_INCOMPATIBLE;
 
+    l_CoreDoCommand = (ptr_CoreDoCommand) osal_dynlib_getproc(CoreLibHandle, "CoreDoCommand");
     ConfigListSections = (ptr_ConfigListSections) osal_dynlib_getproc(CoreLibHandle, "ConfigListSections");
     ConfigListParameters = (ptr_ConfigListParameters) osal_dynlib_getproc(CoreLibHandle, "ConfigListParameters");
     ConfigGetParameterType = (ptr_ConfigGetParameterType) osal_dynlib_getproc(CoreLibHandle, "ConfigGetParameterType");
-    if (!ConfigListSections || !ConfigGetParameterType)
+    ConfigSaveSection = (ptr_ConfigSaveSection) osal_dynlib_getproc(CoreLibHandle, "ConfigSaveSection");
+    if (!ConfigListSections || !ConfigGetParameterType || !ConfigSaveSection)
         return M64ERR_INCOMPATIBLE;
 
     if (ConfigOpenSection(CONFIG_SECTION, &l_ConfigAudio) != M64ERR_SUCCESS)
@@ -258,13 +245,17 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Con
     ConfigSetDefaultFloat(l_ConfigAudio, "Version",             CONFIG_PARAM_VERSION,  "altru audio plugin config parameter version number");
     ConfigSetDefaultInt(l_ConfigAudio, "DEFAULT_FREQUENCY",     DEFAULT_FREQUENCY,     "Frequency which is used if rom doesn't want to change it");
     ConfigSetDefaultBool(l_ConfigAudio, "SWAP_CHANNELS",        0,                     "Swaps left and right channels");
-    ConfigSetDefaultInt(l_ConfigAudio, "PRIMARY_BUFFER_SIZE",   PRIMARY_BUFFER_SIZE,   "Size of primary buffer in output samples. This is where audio is loaded after it's extracted from n64's memory.");
-    ConfigSetDefaultInt(l_ConfigAudio, "PRIMARY_BUFFER_TARGET", PRIMARY_BUFFER_TARGET, "Fullness level target for Primary audio buffer, in equivalent output samples. This value must be larger than the SECONDARY_BUFFER_SIZE. Decreasing this value will reduce audio latency but requires a faster PC to avoid choppiness. Increasing this will increase audio latency but reduce the chance of drop-outs.");
-    ConfigSetDefaultInt(l_ConfigAudio, "SECONDARY_BUFFER_SIZE", SECONDARY_BUFFER_SIZE, "Size of secondary buffer in output samples. This is SDL's hardware buffer. The SDL documentation states that this should be a power of two between 512 and 8192.");
-    ConfigSetDefaultString(l_ConfigAudio, "RESAMPLE",           DEFAULT_RESAMPLER,             "Audio resampling algorithm. src-sinc-best-quality, src-sinc-medium-quality, src-sinc-fastest, src-zero-order-hold, src-linear, speex-fixed-{10-0}, trivial");
+    ConfigSetDefaultInt(l_ConfigAudio, "SECONDARY_BUFFER_SIZE", 0,                     "SDL device period in output samples (a power of two); 0 picks about 12 ms from the output rate.");
+    ConfigSetDefaultString(l_ConfigAudio, "RESAMPLE",           DEFAULT_RESAMPLER,     "Resampler: poly (polyphase sinc, default), trivial (nearest), and in builds with them speex-fixed-{0-10}, src-*");
+    ConfigSetDefaultInt(l_ConfigAudio, "BUFFER_MODE",           0,                     "0 = automatic buffer size (grows on underruns, shrinks slowly), 1 = fixed size (BUFFER_MS)");
+    ConfigSetDefaultInt(l_ConfigAudio, "BUFFER_MS",             60,                    "Buffer level in milliseconds in fixed mode");
+    ConfigSetDefaultInt(l_ConfigAudio, "FF_MODE",               0,                     "Fast-forward audio: 0 = normal pitch, 1 = muted");
+    ConfigSetDefaultInt(l_ConfigAudio, "RATE_ADJUST_PPM",       5000,                  "Largest resample ratio change of the dynamic rate control, in parts per million (5000 = 0.5 %)");
+    ConfigSetDefaultBool(l_ConfigAudio, "CONCEAL",             1,                     "When the core falls behind, replay the last 20 ms of audio (up to four times in a row) before going silent");
+    ConfigSetDefaultInt(l_ConfigAudio, "OUTPUT_MODE",           0,                     "0 = SDL callback, 1 = SDL_QueueAudio (experimental)");
     ConfigSetDefaultInt(l_ConfigAudio, "VOLUME_ADJUST",         5,                     "Percentage change each time the volume is increased or decreased");
     ConfigSetDefaultInt(l_ConfigAudio, "VOLUME_DEFAULT",        80,                    "Default volume when a game is started");
-    ConfigSetDefaultBool(l_ConfigAudio, "AUDIO_SYNC",           1,                     "Synchronize Video/Audio");
+    ConfigSetDefaultBool(l_ConfigAudio, "AUDIO_SYNC",           1,                     "Delay the core when it runs far ahead of the audio clock");
 
     l_PluginInit = 1;
     return M64ERR_SUCCESS;
@@ -274,6 +265,8 @@ EXPORT m64p_error CALL PluginShutdown(void)
 {
     if (!l_PluginInit)
         return M64ERR_NOT_INIT;
+
+    altru_opt_shutdown();
 
     /* reset some local variables */
     l_DebugCallback = NULL;
@@ -341,8 +334,6 @@ EXPORT void CALL AiLenChanged(void)
         return;
 
     sdl_push_samples(l_sdl_backend, AudioInfo.RDRAM + (*AudioInfo.AI_DRAM_ADDR_REG & 0xffffff), *AudioInfo.AI_LEN_REG);
-
-    sdl_synchronize_audio(l_sdl_backend);
 }
 
 EXPORT int CALL InitiateAudio(AUDIO_INFO Audio_Info)
@@ -361,9 +352,15 @@ EXPORT int CALL RomOpen(void)
         return 0;
 
     VolDelta = ConfigGetParamInt(l_ConfigAudio, "VOLUME_ADJUST");
-    VolPercent = ConfigGetParamInt(l_ConfigAudio, "VOLUME_DEFAULT");
+    VolPercent = altru_opt_int("VOLUME_DEFAULT");
+    if (VolPercent < 0) VolPercent = 0;
+    if (VolPercent > 100) VolPercent = 100;
+    l_EmuThread = pthread_self();
+    VolIsMuted = 0;
+    VolumeCommit();
 
-    l_sdl_backend = init_sdl_backend_from_config(l_ConfigAudio);
+    l_sdl_backend = init_sdl_backend_from_config(l_ConfigAudio, l_CoreDoCommand);
+    altru_opt_started();
 
     return 1;
 }
@@ -375,6 +372,7 @@ EXPORT void CALL RomClosed(void)
 
     release_sdl_backend(l_sdl_backend);
     l_sdl_backend = NULL;
+    altru_opt_stopped();
 }
 
 EXPORT void CALL ProcessAList(void)
@@ -389,25 +387,18 @@ EXPORT void CALL SetSpeedFactor(int percentage)
     sdl_set_speed_factor(l_sdl_backend, percentage);
 }
 
-size_t ResampleAndMix(void* resampler, const struct resampler_interface* iresampler,
-        void* mix_buffer,
-        const void* src, size_t src_size, unsigned int src_freq,
-        void* dst, size_t dst_size, unsigned int dst_freq)
+int altru_gain(void)
 {
-    size_t consumed;
-
-    consumed = iresampler->resample(resampler, src, src_size, src_freq, mix_buffer, dst_size, dst_freq);
-    memset(dst, 0, dst_size);
-    SDL_MixAudio(dst, mix_buffer, dst_size, VolSDL);
-
-    return consumed;
+    return VolSDL;
 }
 
-void SetPlaybackVolume(void)
-{
-    VolSDL = SDL_MIX_MAXVOLUME * VolPercent / 100;
-}
-
+m64p_handle altru_config(void) { return l_ConfigAudio; }
+int altru_started(void) { return l_PluginInit; }
+int altru_running(void) { return l_sdl_backend != NULL; }
+int altru_on_emu_thread(void) { return l_sdl_backend == NULL || pthread_equal(pthread_self(), l_EmuThread); }
+struct sdl_backend* altru_backend(void) { return l_sdl_backend; }
+int altru_volume_get(void) { return VolPercent; }
+void altru_volume_set(int percent) { VolumeSetLevel(percent); }
 
 // Returns the most recent ummuted volume level.
 static int VolumeGetUnmutedLevel(void)

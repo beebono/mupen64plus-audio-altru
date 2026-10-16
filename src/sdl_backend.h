@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-audio-altru - sdl_backend.h                                 *
+ *   Mupen64plus-audio-altru - sdl_backend.h                               *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2017 Bobby Smiles                                       *
  *                                                                         *
@@ -24,18 +24,23 @@
 
 #include <stddef.h>
 
+#include "m64p_types.h"
+#include "m64p_config.h"
+#include "m64p_frontend.h"
+
 struct sdl_backend;
 
-struct sdl_backend* init_sdl_backend_from_config(m64p_handle config);
-
+struct sdl_backend* init_sdl_backend_from_config(m64p_handle config, ptr_CoreDoCommand core_cmd);
 void release_sdl_backend(struct sdl_backend* sdl_backend);
 
 void sdl_set_frequency(struct sdl_backend* sdl_backend, unsigned int frequency);
-
 void sdl_push_samples(struct sdl_backend* sdl_backend, const void* src, size_t size);
-
-void sdl_synchronize_audio(struct sdl_backend* sdl_backend);
-
 void sdl_set_speed_factor(struct sdl_backend* sdl_backend, unsigned int speed_factor);
+
+void sdl_set_sync(struct sdl_backend* sdl_backend, int on);
+void sdl_set_ff_mute(struct sdl_backend* sdl_backend, int on);
+void sdl_set_conceal(struct sdl_backend* sdl_backend, int on);
+int sdl_set_resampler(struct sdl_backend* sdl_backend, const char* id);
+const char* sdl_resampler_id(const struct sdl_backend* sdl_backend);
 
 #endif

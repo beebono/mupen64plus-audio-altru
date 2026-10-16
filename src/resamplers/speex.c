@@ -1,5 +1,5 @@
 /* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-audio-altru - speex.c                                       *
+ *   Mupen64plus-audio-altru - speex.c                                     *
  *   Mupen64Plus homepage: https://mupen64plus.org/                        *
  *   Copyright (C) 2017 Bobby Smiles                                       *
  *                                                                         *
@@ -28,106 +28,66 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
-#define ARRAY_SIZE(x) sizeof((x)) / sizeof((x)[0])
-
-/* assume 2x16bit interleaved channels */
-enum { BYTES_PER_SAMPLE = 4 };
-
-
-
-static void* speex_init_from_id(const char* resampler_id)
+/* Opt-in (USE_SPEEX=1). The ratio is passed as Q16 fractions and only re-set when it changes. */
+struct spx
 {
-    size_t i;
-    int error;
-    static const char *types[] =
-    {
-        "speex-fixed-0",
-        "speex-fixed-1",
-        "speex-fixed-2",
-        "speex-fixed-3",
-        "speex-fixed-4",
-        "speex-fixed-5",
-        "speex-fixed-6",
-        "speex-fixed-7",
-        "speex-fixed-8",
-        "speex-fixed-9",
-        "speex-fixed-10",
-    };
-
-    /* select resampler configuration */
-    for (i = 0; i < ARRAY_SIZE(types); ++i) {
-        if (strcmp(types[i], resampler_id) == 0) {
-            break;
-        }
-    }
-
-    /* handle unknown configuration */
-    if (i >= ARRAY_SIZE(types)) {
-        i = 4;
-
-        DebugMessage(M64MSG_WARNING,
-            "Unknown RESAMPLE configuration %s; use %s resampler",
-            resampler_id, types[i]);
-    }
-
-    /* init speex object with dummy frequencies (will be set later) */
-    SpeexResamplerState* spx_state =  speex_resampler_init(2, 44100, 44100, (int)i,  &error);
-
-    if (error != RESAMPLER_ERR_SUCCESS) {
-        DebugMessage(M64MSG_ERROR, "Speex error: %s", speex_resampler_strerror(error));
-    }
-
-    return spx_state;
-}
-
-static void speex_release(void* resampler)
-{
-    SpeexResamplerState* spx_state = (SpeexResamplerState*)resampler;
-
-    if (spx_state == NULL) {
-        return;
-    }
-
-    speex_resampler_destroy(spx_state);
-}
-
-static size_t speex_resample(void* resampler,
-                             const void* src, size_t src_size, unsigned int src_freq,
-                             void* dst, size_t dst_size, unsigned int dst_freq)
-{
-    SpeexResamplerState* spx_state = (SpeexResamplerState*)resampler;
-
-    /* update resampling rates */
-    speex_resampler_set_rate(spx_state, src_freq, dst_freq);
-
-    /* perform resampling */
-    spx_uint32_t in_len = src_size / BYTES_PER_SAMPLE;
-    spx_uint32_t out_len = dst_size / BYTES_PER_SAMPLE;
-    int error = speex_resampler_process_interleaved_int(spx_state, (const spx_int16_t *)src, &in_len, (spx_int16_t *)dst, &out_len);
-
-    /* in case of error, display error, zero output buffer and discard input buffer */
-    if (error != RESAMPLER_ERR_SUCCESS)
-    {
-        DebugMessage(M64MSG_ERROR, "Speex error: %s", speex_resampler_strerror(error));
-        memset(dst, 0, dst_size);
-        return src_size;
-    }
-
-    if (dst_size != out_len * BYTES_PER_SAMPLE) {
-        DebugMessage(M64MSG_WARNING, "dst_size = %u != outlen*4 = %u",
-                (uint32_t) dst_size, out_len * BYTES_PER_SAMPLE);
-    }
-    memset((char*)dst + out_len * BYTES_PER_SAMPLE, 0, dst_size - out_len * BYTES_PER_SAMPLE);
-
-    return in_len * BYTES_PER_SAMPLE;
-}
-
-
-const struct resampler_interface g_speex_iresampler = {
-    "speex",
-    speex_init_from_id,
-    speex_release,
-    speex_resample
+    SpeexResamplerState* st;
+    unsigned in_hz, out_hz;
+    uint32_t ratio;
 };
+
+static void* speex_create(const char* id, unsigned in_hz, unsigned out_hz)
+{
+    int error, q = 4;
+    struct spx* s = calloc(1, sizeof(*s));
+    if (s == NULL)
+        return NULL;
+    if (strncmp(id, "speex-fixed-", 12) == 0)
+        q = atoi(id + 12);
+    if (q < 0 || q > 10)
+        q = 4;
+    s->st = speex_resampler_init(2, in_hz, out_hz, q, &error);
+    if (s->st == NULL) {
+        DebugMessage(M64MSG_ERROR, "Speex error: %s", speex_resampler_strerror(error));
+        free(s);
+        return NULL;
+    }
+    s->in_hz = in_hz;
+    s->out_hz = out_hz;
+    s->ratio = (uint32_t)(((uint64_t)in_hz << 16) / out_hz);
+    return s;
+}
+
+static void speex_release(void* rs)
+{
+    struct spx* s = rs;
+    if (s) {
+        speex_resampler_destroy(s->st);
+        free(s);
+    }
+}
+
+static void speex_reset(void* rs) { speex_resampler_reset_mem(((struct spx*)rs)->st); }
+
+static size_t speex_process(void* rs, const int16_t* src, size_t avail, int16_t* dst, size_t want, uint64_t step, size_t* produced)
+{
+    struct spx* s = rs;
+    uint32_t ratio = (uint32_t)(step >> 16);
+    spx_uint32_t in_len = (spx_uint32_t)avail, out_len = (spx_uint32_t)want;
+
+    if (ratio != s->ratio) {
+        speex_resampler_set_rate_frac(s->st, ratio, 65536, s->in_hz, s->out_hz);
+        s->ratio = ratio;
+    }
+    if (speex_resampler_process_interleaved_int(s->st, src, &in_len, dst, &out_len) != RESAMPLER_ERR_SUCCESS) {
+        *produced = 0;
+        return avail;
+    }
+    *produced = out_len;
+    return in_len;
+}
+
+const struct resampler_interface g_speex_iresampler = { "speex", speex_create, speex_release, speex_reset, speex_process };

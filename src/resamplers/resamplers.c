@@ -19,7 +19,7 @@
  *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
-#include "resamplers.h"
+#include "resamplers/resamplers.h"
 
 #include "main.h"
 
@@ -27,7 +27,7 @@
 
 #include <string.h>
 
-
+extern const struct resampler_interface g_poly_iresampler;
 extern const struct resampler_interface g_trivial_iresampler;
 #ifdef USE_SPEEX
 extern const struct resampler_interface g_speex_iresampler;
@@ -36,43 +36,25 @@ extern const struct resampler_interface g_speex_iresampler;
 extern const struct resampler_interface g_src_iresampler;
 #endif
 
-
-#define ARRAY_SIZE(x) sizeof((x)) / sizeof((x)[0])
-
-const struct resampler_interface* get_iresampler(const char* resampler_id, void** resampler)
+const struct resampler_interface* get_iresampler(const char* id, void** rs, unsigned in_hz, unsigned out_hz)
 {
-    size_t i;
+    const struct resampler_interface* ir = &g_poly_iresampler;
 
-    static const struct {
-        const struct resampler_interface* iresampler;
-        const char* cmp_str;
-    } resamplers[] = {
-        { &g_trivial_iresampler, "trivial" },
+    if (strcmp(id, "trivial") == 0)
+        ir = &g_trivial_iresampler;
 #ifdef USE_SPEEX
-        { &g_speex_iresampler, "speex-" },
+    else if (strncmp(id, "speex-", 6) == 0)
+        ir = &g_speex_iresampler;
 #endif
 #ifdef USE_SRC
-        { &g_src_iresampler, "src-" }
+    else if (strncmp(id, "src-", 4) == 0)
+        ir = &g_src_iresampler;
 #endif
-    };
+    else if (strcmp(id, "poly") != 0)
+        DebugMessage(M64MSG_WARNING, "Resampler '%s' is not available in this build; using %s", id, ir->name);
 
-    /* search matching resampler */
-    for(i = 0; i < ARRAY_SIZE(resamplers); ++i) {
-        if (strncmp(resampler_id, resamplers[i].cmp_str, strlen(resamplers[i].cmp_str)) == 0) {
-            DebugMessage(M64MSG_INFO, "Using resampler %s", resamplers[i].iresampler->name);
-            break;
-        }
-    }
-
-    /* handle not found case */
-    if (i >= ARRAY_SIZE(resamplers)) {
-        i = 0;
-
-        DebugMessage(M64MSG_WARNING, "Could not find RESAMPLE configuration %s; use %s resampler",
-            resampler_id, resamplers[i].iresampler->name);
-    }
-
-    /* instanciate resampler */
-    *resampler = resamplers[i].iresampler->init_from_id(resampler_id);
-    return resamplers[i].iresampler;
+    *rs = ir->create(id, in_hz, out_hz);
+    if (*rs == NULL)
+        return NULL;
+    return ir;
 }

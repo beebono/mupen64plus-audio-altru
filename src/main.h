@@ -22,6 +22,8 @@
 /* version info */
 #include "m64p_config.h"
 
+struct sdl_backend;
+
 #include <stddef.h>
 
 #if defined(__GNUC__)
@@ -38,17 +40,32 @@ enum {
     VOLUME_TYPE_OSS = 2,
 };
 
-void SetPlaybackVolume(void);
+#define ALTRU_PLUGIN_VERSION 0x000100
 
-size_t ResampleAndMix(void* resampler, const struct resampler_interface* iresampler,
-        void* mix_buffer,
-        const void* src, size_t src_size, unsigned int src_freq,
-        void* dst, size_t dst_size, unsigned int dst_freq);
+/* current output gain, 0..128 */
+int altru_gain(void);
+
+/* plugin state for suxty.c */
+m64p_handle altru_config(void);
+int altru_started(void);          /* PluginStartup done */
+int altru_running(void);          /* ROM open, backend exists */
+int altru_on_emu_thread(void);
+struct sdl_backend* altru_backend(void);
+int altru_volume_get(void);
+void altru_volume_set(int percent);
+
+/* options, with the values suxty set() for the coming launch taking precedence over the config */
+int altru_opt_int(const char* key);
+const char* altru_opt_resampler(void);
+void altru_opt_started(void);
+void altru_opt_stopped(void);
+void altru_opt_shutdown(void);
 
 /* declarations of pointers to Core config functions */
 extern ptr_ConfigListSections     ConfigListSections;
 extern ptr_ConfigOpenSection      ConfigOpenSection;
 extern ptr_ConfigGetParameterType ConfigGetParameterType;
+extern ptr_ConfigSaveSection      ConfigSaveSection;
 extern ptr_ConfigDeleteSection    ConfigDeleteSection;
 extern ptr_ConfigListParameters   ConfigListParameters;
 extern ptr_ConfigSetParameter     ConfigSetParameter;

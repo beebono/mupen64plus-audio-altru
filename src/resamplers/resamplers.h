@@ -1,51 +1,36 @@
-/* * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * *
- *   Mupen64plus-audio-sdl - resamplers.h                                  *
- *   Mupen64Plus homepage: https://mupen64plus.org/                        *
- *   Copyright (C) 2017 Bobby Smiles                                       *
- *                                                                         *
- *   This program is free software; you can redistribute it and/or modify  *
- *   it under the terms of the GNU General Public License as published by  *
- *   the Free Software Foundation; either version 2 of the License, or     *
- *   (at your option) any later version.                                   *
- *                                                                         *
- *   This program is distributed in the hope that it will be useful,       *
- *   but WITHOUT ANY WARRANTY; without even the implied warranty of        *
- *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the         *
- *   GNU General Public License for more details.                          *
- *                                                                         *
- *   You should have received a copy of the GNU General Public License     *
- *   along with this program; if not, write to the                         *
- *   Free Software Foundation, Inc.,                                       *
- *   51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.          *
- * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
+/* altru - resamplers.h
+ * Stereo int16 resamplers with a ratio that can change on every call (dynamic rate control).
+ * Copyright (C) 2026 altru contributors; derived from mupen64plus-audio-sdl, SPDX-License-Identifier: GPL-2.0-or-later */
 
-#ifndef M64P_RESAMPLERS_RESAMPLERS_H
-#define M64P_RESAMPLERS_RESAMPLERS_H
+#ifndef ALTRU_RESAMPLERS_H
+#define ALTRU_RESAMPLERS_H
 
 #include <stddef.h>
+#include <stdint.h>
+
+/* The caller keeps RS_HIST frames of history before the first source frame it passes and
+ * a resampler needs up to RS_LOOK frames past the position it reads. */
+#define RS_HIST 16
+#define RS_LOOK 16
+
+#define RS_ONE ((uint64_t)1 << 32)
 
 struct resampler_interface
 {
     const char* name;
 
-    void* (*init_from_id)(const char* resampler_id);
+    void* (*create)(const char* id, unsigned in_hz, unsigned out_hz);
+    void (*release)(void* rs);
+    void (*reset)(void* rs);
 
-    void (*release)(void* resampler);
-
-    size_t (*resample)(void* resampler,
-                       const void* src, size_t src_size, unsigned int src_freq,
-                       void* dst, size_t dst_size, unsigned int dst_freq);
+    /* src: source frames [0, avail) with RS_HIST valid frames before src[0]. step: source frames per output frame, Q32.
+     * Writes up to want frames to dst, returns the whole source frames consumed (the fraction stays in the resampler). */
+    size_t (*process)(void* rs, const int16_t* src, size_t avail, int16_t* dst, size_t want, uint64_t step, size_t* produced);
 };
 
-const struct resampler_interface* get_iresampler(const char* resampler_id, void** resampler);
+/* "poly" (default), "trivial", and with USE_SPEEX / USE_SRC "speex-fixed-{0..10}", "src-*". Unknown ids give the default. */
+const struct resampler_interface* get_iresampler(const char* id, void** rs, unsigned in_hz, unsigned out_hz);
 
-/* default resampler */
-#if defined(USE_SPEEX)
-    #define DEFAULT_RESAMPLER "speex-fixed-4"
-#elif defined(USE_SRC)
-    #define DEFAULT_RESAMPLER "src-sinc-medium-quality"
-#else
-    #define DEFAULT_RESAMPLER "trivial"
-#endif
+#define DEFAULT_RESAMPLER "poly"
 
 #endif
