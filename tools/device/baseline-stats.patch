@@ -1,0 +1,142 @@
+--- a/src/sdl_backend.c	2026-10-16 09:39:25.108794414 -0500
++++ b/src/sdl_backend.c	2026-10-16 08:51:43.565585667 -0500
+@@ -23,6 +23,7 @@
+ #include <SDL_audio.h>
+ #include <stdlib.h>
+ #include <string.h>
++#include <stdio.h>
+ 
+ #include "circular_buffer.h"
+ #include "main.h"
+@@ -76,6 +77,14 @@
+ 
+     unsigned int error;
+ 
++    /* baseline instrumentation */
++    unsigned long long cb_count, under_cb, silent_samples, pause_events, delay_events, delay_ms, pushes, push_samples_n;
++    unsigned long long paused_us, pause_start_us;
++    unsigned long long t0_us;
++    unsigned int started;
++    struct { unsigned int t_ms; int level; int avail; unsigned n; } *trace; unsigned last_n;
++    unsigned int trace_n;
++
+     /* Resampler */
+     void* resampler;
+     const struct resampler_interface* iresampler;
+@@ -89,12 +98,14 @@
+         SDL_AUDIO_ISBIGENDIAN(x) ? "BE" : "LE"
+ 
+ 
++static unsigned long long now_us(void){ return SDL_GetPerformanceCounter()*1000000ULL/SDL_GetPerformanceFrequency(); }
+ static void my_audio_callback(void* userdata, unsigned char* stream, int len)
+ {
+     struct sdl_backend* sdl_backend = (struct sdl_backend*)userdata;
+ 
+     /* mark the time, for synchronization on the input side */
+     sdl_backend->last_cb_time = SDL_GetTicks();
++    sdl_backend->cb_count++;
+ 
+     unsigned int newsamplerate = sdl_backend->output_frequency * 100 / sdl_backend->speed_factor;
+     unsigned int oldsamplerate = sdl_backend->input_frequency;
+@@ -115,6 +126,8 @@
+     else
+     {
+         ++sdl_backend->underrun_count;
++        sdl_backend->under_cb++;
++        sdl_backend->silent_samples += len/4;
+         memset(stream, 0, len);
+     }
+ }
+@@ -167,7 +180,7 @@
+         }
+     }
+ 
+-    sdl_backend->paused_for_sync = 1;
++    sdl_backend->paused_for_sync = 1; sdl_backend->pause_start_us = now_us();
+ 
+     /* reload these because they gets re-assigned from SDL data below, and sdl_init_audio_device can be called more than once */
+     sdl_backend->primary_buffer_size = ConfigGetParamInt(sdl_backend->config, "PRIMARY_BUFFER_SIZE");
+@@ -283,6 +296,7 @@
+     sdl_backend->speed_factor = 100;
+     sdl_backend->resampler = resampler;
+     sdl_backend->iresampler = iresampler;
++    if (getenv("ALTRU_STATS")) sdl_backend->trace = calloc(400000, 16);
+ 
+     sdl_init_audio_device(sdl_backend);
+ 
+@@ -313,6 +327,20 @@
+     if (sdl_backend->error == 0) {
+         release_audio_device(sdl_backend);
+     }
++    if (getenv("ALTRU_STATS") && sdl_backend->t0_us) {
++        double dur = (now_us() - sdl_backend->t0_us)/1e6;
++        if (sdl_backend->paused_for_sync && sdl_backend->started) sdl_backend->paused_us += now_us() - sdl_backend->pause_start_us;
++        char path[512]; FILE* f;
++        snprintf(path, sizeof path, "%s.sum", getenv("ALTRU_STATS"));
++        f = fopen(path, "w");
++        if (f) { fprintf(f, "dur_s %.1f\ncallbacks %llu\nunderrun_cb %llu\nsilent_ms %.0f\npause_events %llu\npaused_ms %.0f\ndelay_events %llu\ndelay_ms %llu\npushes %llu\nout_freq %u\nin_freq %u\nsec %zu\ntarget %zu\n",
++            dur, sdl_backend->cb_count, sdl_backend->under_cb, sdl_backend->silent_samples*1000.0/sdl_backend->output_frequency,
++            sdl_backend->pause_events, sdl_backend->paused_us/1000.0, sdl_backend->delay_events, sdl_backend->delay_ms, sdl_backend->pushes,
++            sdl_backend->output_frequency, sdl_backend->input_frequency, sdl_backend->secondary_buffer_size, sdl_backend->target); fclose(f); }
++        f = fopen(getenv("ALTRU_STATS"), "w");
++        if (f) { unsigned i; fprintf(f, "t_ms,level,avail,n\n"); for (i = 0; i < sdl_backend->trace_n; i++) fprintf(f, "%u,%d,%d,%u\n", sdl_backend->trace[i].t_ms, sdl_backend->trace[i].level, sdl_backend->trace[i].avail, sdl_backend->trace[i].n); fclose(f); }
++    }
++    free(sdl_backend->trace);
+ 
+     /* release primary buffer */
+     release_cbuff(&sdl_backend->primary_buffer);
+@@ -349,6 +377,7 @@
+         DebugMessage(M64MSG_WARNING, "sdl_push_samples: pushing non full samples: %zu bytes !", size);
+     }
+     size = (size / 4) * 4;
++    sdl_backend->last_n = size / 4;
+ 
+     /* We need to lock audio before accessing cbuff */
+     SDL_LockAudio();
+@@ -416,6 +445,18 @@
+     enum { TOLERANCE_MS = 10 };
+ 
+     size_t expected_level = estimate_level_at_next_audio_cb(sdl_backend);
++    {
++        size_t av; cbuff_tail(&sdl_backend->primary_buffer, &av);
++        if (!sdl_backend->t0_us) sdl_backend->t0_us = now_us();
++        if (sdl_backend->trace && sdl_backend->trace_n < 400000) {
++            sdl_backend->trace[sdl_backend->trace_n].t_ms = (now_us() - sdl_backend->t0_us)/1000;
++            sdl_backend->trace[sdl_backend->trace_n].level = (int)expected_level;
++            sdl_backend->trace[sdl_backend->trace_n].n = sdl_backend->last_n;
++            sdl_backend->trace[sdl_backend->trace_n].avail = (int)(av/4 * sdl_backend->output_frequency / sdl_backend->input_frequency);
++            sdl_backend->trace_n++;
++        }
++        sdl_backend->pushes++;
++    }
+ 
+     /* If the expected value of the Primary Buffer Fullness at the time of the next audio callback is more than 10
+        milliseconds ahead of our target buffer fullness level, then insert a delay now */
+@@ -425,23 +466,24 @@
+          * delay emulation to allow the SDL audio thread to catch up */
+         unsigned int wait_time = (expected_level - sdl_backend->target) * 1000 / sdl_backend->output_frequency;
+ 
+-        if (sdl_backend->paused_for_sync) { SDL_PauseAudio(0); }
++        if (sdl_backend->paused_for_sync) { SDL_PauseAudio(0); if (sdl_backend->started) sdl_backend->paused_us += now_us() - sdl_backend->pause_start_us; sdl_backend->started = 1; }
+         sdl_backend->paused_for_sync = 0;
+ 
++        sdl_backend->delay_events++; sdl_backend->delay_ms += wait_time;
+         SDL_Delay(wait_time);
+     }
+     else if (expected_level < sdl_backend->secondary_buffer_size)
+     {
+         /* Core is behind SDL audio thread (predicting an underflow),
+          * pause the audio to let the Core catch up */
+-        if (!sdl_backend->paused_for_sync) { SDL_PauseAudio(1); }
++        if (!sdl_backend->paused_for_sync) { SDL_PauseAudio(1); sdl_backend->pause_events++; sdl_backend->pause_start_us = now_us(); }
+         sdl_backend->paused_for_sync = 1;
+     }
+     else
+     {
+         /* Expected fullness is within tolerance,
+          * audio thread is running */
+-        if (sdl_backend->paused_for_sync) { SDL_PauseAudio(0); }
++        if (sdl_backend->paused_for_sync) { SDL_PauseAudio(0); if (sdl_backend->started) sdl_backend->paused_us += now_us() - sdl_backend->pause_start_us; sdl_backend->started = 1; }
+         sdl_backend->paused_for_sync = 0;
+     }
+ }
