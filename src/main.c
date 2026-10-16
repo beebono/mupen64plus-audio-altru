@@ -128,14 +128,17 @@ static int ConfigSectionExists(const char *name)
     return q.found;
 }
 
-/* Copies the keys both plugins have in common into Audio-Altru, unless they are already set there. */
+/* Copies the keys both plugins have in common into Audio-Altru, unless they are already set there or still hold
+ * audio-sdl's stock value (an untuned config then gets altru's own defaults, e.g. poly instead of trivial). */
 static void SeedFromLegacy(void)
 {
-    static const struct { const char *key; m64p_type type; } keys[] = {
-        { "DEFAULT_FREQUENCY", M64TYPE_INT }, { "SWAP_CHANNELS", M64TYPE_BOOL },
-        { "SECONDARY_BUFFER_SIZE", M64TYPE_INT }, { "RESAMPLE", M64TYPE_STRING },
-        { "VOLUME_ADJUST", M64TYPE_INT }, { "VOLUME_DEFAULT", M64TYPE_INT }, { "AUDIO_SYNC", M64TYPE_BOOL },
+    static const struct { const char *key; m64p_type type; int stock; } keys[] = {
+        { "DEFAULT_FREQUENCY", M64TYPE_INT, 33600 }, { "SWAP_CHANNELS", M64TYPE_BOOL, 0 },
+        { "SECONDARY_BUFFER_SIZE", M64TYPE_INT, 1024 }, { "RESAMPLE", M64TYPE_STRING, 0 },
+        { "VOLUME_ADJUST", M64TYPE_INT, 5 }, { "VOLUME_DEFAULT", M64TYPE_INT, 80 }, { "AUDIO_SYNC", M64TYPE_BOOL, 1 },
     };
+    /* audio-sdl's RESAMPLE default depends on its build */
+    static const char *const stock_resamplers[] = { "trivial", "speex-fixed-4", "src-sinc-medium-quality" };
     m64p_handle old;
     size_t i;
 
@@ -152,10 +155,15 @@ static void SeedFromLegacy(void)
             continue;
         if (keys[i].type == M64TYPE_STRING)
         {
-            if (ConfigGetParameter(old, keys[i].key, M64TYPE_STRING, str, sizeof(str)) == M64ERR_SUCCESS)
+            size_t j;
+            if (ConfigGetParameter(old, keys[i].key, M64TYPE_STRING, str, sizeof(str)) != M64ERR_SUCCESS)
+                continue;
+            for (j = 0; j < sizeof(stock_resamplers) / sizeof(stock_resamplers[0]) && strcmp(str, stock_resamplers[j]) != 0; j++)
+                ;
+            if (j == sizeof(stock_resamplers) / sizeof(stock_resamplers[0]))
                 ConfigSetParameter(l_ConfigAudio, keys[i].key, M64TYPE_STRING, str);
         }
-        else if (ConfigGetParameter(old, keys[i].key, keys[i].type, &v, sizeof(v)) == M64ERR_SUCCESS)
+        else if (ConfigGetParameter(old, keys[i].key, keys[i].type, &v, sizeof(v)) == M64ERR_SUCCESS && v != keys[i].stock)
             ConfigSetParameter(l_ConfigAudio, keys[i].key, keys[i].type, &v);
     }
     DebugMessage(M64MSG_INFO, "Seeded '" CONFIG_SECTION "' from '" LEGACY_SECTION "'");

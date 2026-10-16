@@ -108,14 +108,17 @@ int main(int argc, char** argv)
     ConfigOpenSection("Audio-SDL", &h);
     ConfigSetDefaultInt(h, "DEFAULT_FREQUENCY", 22050, ""); ConfigSetDefaultBool(h, "AUDIO_SYNC", 0, ""); ConfigSetDefaultString(h, "RESAMPLE", "trivial", "");
     ConfigSetDefaultInt(h, "VOLUME_DEFAULT", 33, ""); ConfigSetDefaultInt(h, "UNRELATED", 7, "");
+    ConfigSetDefaultInt(h, "SECONDARY_BUFFER_SIZE", 1024, ""); ConfigSetDefaultInt(h, "VOLUME_ADJUST", 10, "");
     CHECK(startup(core, NULL, dbg) == M64ERR_SUCCESS);
     CHECK(find("Audio-Altru") != NULL);
     CHECK(ConfigGetParamInt(find("Audio-Altru"), "DEFAULT_FREQUENCY") == 22050);
     CHECK(ConfigGetParamBool(find("Audio-Altru"), "AUDIO_SYNC") == 0);
-    CHECK(strcmp(ConfigGetParamString(find("Audio-Altru"), "RESAMPLE"), "trivial") == 0);
+    CHECK(strcmp(ConfigGetParamString(find("Audio-Altru"), "RESAMPLE"), "poly") == 0);      /* stock trivial: not seeded */
+    CHECK(ConfigGetParamInt(find("Audio-Altru"), "SECONDARY_BUFFER_SIZE") == 0);            /* stock 1024: not seeded, auto */
+    CHECK(ConfigGetParamInt(find("Audio-Altru"), "VOLUME_ADJUST") == 10);                   /* tuned: seeded */
     CHECK(ConfigGetParamInt(find("Audio-Altru"), "VOLUME_DEFAULT") == 33);
     CHECK(fe(find("Audio-Altru"), "UNRELATED") == NULL);
-    CHECK(find("Audio-SDL")->n == 5 && ConfigGetParamInt(find("Audio-SDL"), "VOLUME_DEFAULT") == 33);
+    CHECK(find("Audio-SDL")->n == 7 && ConfigGetParamInt(find("Audio-SDL"), "VOLUME_DEFAULT") == 33);
     CHECK(shutdown() == M64ERR_SUCCESS);
     ConfigSetParameter(find("Audio-SDL"), "VOLUME_DEFAULT", M64TYPE_INT, &(int){ 90 });
     CHECK(startup(core, NULL, dbg) == M64ERR_SUCCESS);

@@ -3,7 +3,7 @@
 ## Config section `Audio-Altru`
 
 In `mupen64plus.cfg`. When the section does not exist yet and `Audio-SDL` does, these keys are copied from it on the first start: `DEFAULT_FREQUENCY`, `SWAP_CHANNELS`,
-`SECONDARY_BUFFER_SIZE`, `RESAMPLE`, `VOLUME_ADJUST`, `VOLUME_DEFAULT`, `AUDIO_SYNC` (the stock buffer keys `PRIMARY_BUFFER_SIZE` / `PRIMARY_BUFFER_TARGET` have no counterpart and are not copied).
+`SECONDARY_BUFFER_SIZE`, `RESAMPLE`, `VOLUME_ADJUST`, `VOLUME_DEFAULT`, `AUDIO_SYNC`, but only values that differ from audio-sdl's stock defaults (33600, False, 1024, `trivial` / `speex-fixed-4` / `src-sinc-medium-quality`, 5, 80, True): an untuned config gets altru's own defaults (the stock buffer keys `PRIMARY_BUFFER_SIZE` / `PRIMARY_BUFFER_TARGET` have no counterpart and are not copied).
 Keys given with `--set Audio-Altru[...]` before the start are kept. `Audio-SDL` is only read. A `RESAMPLE` value this build does not have (for example `src-sinc-fastest` in a default build) falls back to `poly` with a warning.
 
 | key | default | meaning |
