@@ -245,13 +245,13 @@ EXPORT m64p_error CALL PluginStartup(m64p_dynlib_handle CoreLibHandle, void *Con
     ConfigSetDefaultFloat(l_ConfigAudio, "Version",             CONFIG_PARAM_VERSION,  "altru audio plugin config parameter version number");
     ConfigSetDefaultInt(l_ConfigAudio, "DEFAULT_FREQUENCY",     DEFAULT_FREQUENCY,     "Frequency which is used if rom doesn't want to change it");
     ConfigSetDefaultBool(l_ConfigAudio, "SWAP_CHANNELS",        0,                     "Swaps left and right channels");
-    ConfigSetDefaultInt(l_ConfigAudio, "SECONDARY_BUFFER_SIZE", 0,                     "SDL device period in output samples (a power of two); 0 picks about 12 ms from the output rate.");
+    ConfigSetDefaultInt(l_ConfigAudio, "SECONDARY_BUFFER_SIZE", 0,                     "SDL device period in output samples (a power of two); 0 picks about 23 ms from the output rate.");
     ConfigSetDefaultString(l_ConfigAudio, "RESAMPLE",           DEFAULT_RESAMPLER,     "Resampler: poly (polyphase sinc, default), trivial (nearest), and in builds with them speex-fixed-{0-10}, src-*");
     ConfigSetDefaultInt(l_ConfigAudio, "BUFFER_MODE",           0,                     "0 = automatic buffer size (grows on underruns, shrinks slowly), 1 = fixed size (BUFFER_MS)");
     ConfigSetDefaultInt(l_ConfigAudio, "BUFFER_MS",             60,                    "Buffer level in milliseconds in fixed mode");
     ConfigSetDefaultInt(l_ConfigAudio, "FF_MODE",               0,                     "Fast-forward audio: 0 = normal pitch, 1 = muted");
     ConfigSetDefaultInt(l_ConfigAudio, "RATE_ADJUST_PPM",       5000,                  "Largest resample ratio change of the dynamic rate control, in parts per million (5000 = 0.5 %)");
-    ConfigSetDefaultBool(l_ConfigAudio, "CONCEAL",             1,                     "When the core falls behind, replay the last 20 ms of audio (up to four times in a row) before going silent");
+    ConfigSetDefaultBool(l_ConfigAudio, "CONCEAL",             1,                     "When the core falls behind, time-stretch the audio left in the buffer (pitch kept) before fading to silence");
     ConfigSetDefaultInt(l_ConfigAudio, "OUTPUT_MODE",           0,                     "0 = SDL callback, 1 = SDL_QueueAudio (experimental)");
     ConfigSetDefaultInt(l_ConfigAudio, "VOLUME_ADJUST",         5,                     "Percentage change each time the volume is increased or decreased");
     ConfigSetDefaultInt(l_ConfigAudio, "VOLUME_DEFAULT",        80,                    "Default volume when a game is started");

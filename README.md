@@ -5,7 +5,7 @@ altru is a Mupen64Plus **audio plugin** for aarch64 retro handhelds, a fork of
 being paused and restarted around every near-underrun:
 
 - **Dynamic rate control**: the buffer level is held near a target by nudging the resample ratio (at most +-0.5 %), the way RetroArch does. There are no pauses and no
-  hard delays except as a backstop when the core is far ahead. A real underrun is concealed by replaying the last 20 ms, then silence, then a refill.
+  hard delays except as a backstop when the core is far ahead. A late core is concealed by time-stretching the audio that is left (WSOLA, pitch kept, no repeats), then a fade to silence and a refill.
 - **Automatic buffer size**: it starts small, grows on an underrun and shrinks slowly; a fixed size is an option ([design](docs/design.md#buffer-size)).
 - **Fast-forward at normal pitch**: audio sync is off while the core runs fast (a speed factor above 100 %, or the speed limiter off), and chunks of the audio are kept
   with short crossfades; or mute instead.
@@ -40,7 +40,7 @@ SDL 2.28.5 is enough). `USE_SPEEX=1` / `USE_SRC=1` add the speex / libsamplerate
 | path | content |
 |---|---|
 | `src/main.c` | plugin API, config (`Audio-Altru`, seeding from `Audio-SDL`), volume |
-| `src/sdl_backend.c` | the sample buffer, rate control, buffer sizing, concealment, fast-forward, SDL device (callback or queue), statistics |
+| `src/sdl_backend.c` | the sample buffer, rate control, buffer sizing, concealment (time-stretch), fast-forward, SDL device (callback or queue), statistics |
 | `src/suxty.c`, `src/altru_suxty.h` | the suxty interface and the option lookup |
 | `src/resamplers/` | `poly.c` (polyphase, NEON + scalar), `trivial.c`, opt-in `speex.c`, `src.c` |
 | `tools/` | tests and measurement tools ([docs/testing.md](docs/testing.md)) |

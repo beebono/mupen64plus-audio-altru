@@ -25,6 +25,7 @@
 
 #include <SDL.h>
 #include <SDL_audio.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,10 +44,26 @@
 #define RC_AVG_DIV    16
 #define MAX_TRACE     400000
 #define BUF_FRAMES    (1 << 16)
-#define HIST_KEEP     2048   /* source frames kept behind the read position: resampler history and the rewind of the repeat */
-#define MAX_REPEATS   4
+#define HIST_KEEP     2048   /* source frames kept behind the read position: resampler history */
+#define STR_PASSES    4      /* stretches of the buffered tail between two pushes */
+#define STR_MAX_TAIL  6144   /* longest tail (source frames) that is stretched */
+#define STR_ACC       (2 * STR_MAX_TAIL + 2048)
+
+/* scratch of the tail stretch (allocated once) */
+struct stretch_ws
+{
+    int16_t src[2 * STR_MAX_TAIL];
+    float mono[STR_MAX_TAIL];
+    float mono4[STR_MAX_TAIL / 4 + 8];
+    float acc[3][STR_ACC];           /* left, right, window weight */
+};
 
 struct trace_pt { unsigned t_ms; int level; int ring; unsigned n; };
+
+/* debug tap (ALTRU_TAP=<file>): the output stream and an event log, written when the ROM closes (<file> raw S16 stereo, <file>.ev text) */
+enum { EV_UNDER, EV_STRETCH, EV_REFILL_END, EV_FLUSH, EV_OVERFLOW, EV_DELAY, EV_FREQ, EV_FF, EV_COMPACT_DROP, EV_LATE, EV_SLOW };
+#define MAX_EV 40000
+struct ev_pt { unsigned long long pos; int type, arg, arg2; };
 
 struct sdl_backend
 {
@@ -95,20 +112,29 @@ struct sdl_backend
     int xfade;                        /* crossfade from the last output frame into the next data */
     int16_t last_frame[2];
     int conceal;
-    int rep_run;
+    int str_run;                      /* tail stretches since the last push */
+    size_t str_trig;                  /* level (output frames) below which the tail is stretched */
+    struct stretch_ws* sw;
     int join_fade;                    /* the next appended frames continue the stream at another point */
 
     /* volume */
     int gain_cur;
 
     /* statistics */
-    unsigned long long st_cb, st_under, st_silent, st_delay_n, st_delay_ms, st_push, st_over, st_grow, st_ffdrop, st_flush, st_in, st_out, st_repeat;
+    unsigned long long st_cb, st_under, st_silent, st_delay_n, st_delay_ms, st_push, st_over, st_grow, st_ffdrop, st_flush, st_in, st_out, st_stretch;
     int st_adj_min, st_adj_max;
     size_t st_tmin, st_tmax;
     unsigned long long t0_us;
     struct trace_pt* trace;
+    int16_t* tap;
+    unsigned long long tap_n, tap_max;
+    struct ev_pt* ev;
+    int ev_n;
+    unsigned long long last_cb_us, st_late, st_gap_max, st_dur_max;
     unsigned trace_n;
 };
+
+#define EV(b, t, a, a2) do { if ((b)->ev) { int i_ = __sync_fetch_and_add(&(b)->ev_n, 1); if (i_ < MAX_EV) { (b)->ev[i_].pos = (b)->tap_n; (b)->ev[i_].type = (t); (b)->ev[i_].arg = (int)(a); (b)->ev[i_].arg2 = (int)(a2); } } } while (0)
 
 static unsigned long long now_us(void)
 {
@@ -236,6 +262,112 @@ static void silence(struct sdl_backend* b, int16_t* out, size_t nf)
     b->last_frame[0] = b->last_frame[1] = 0;
 }
 
+
+/* Underrun concealment: time-stretches the unread tail of the buffer in place (WSOLA, pitch preserved), so that the audio left lasts longer while
+ * the core catches up. Grains of G source frames (Hann, 50 % overlap) are taken along the tail at a slower pace than they are written; each
+ * grain's start is searched (+-6 ms) for the best match with the natural continuation of the previous one, so nothing repeats verbatim and the
+ * pitch does not change. The first output frame is the tail's first frame and the tail's last frame stays last (the search for the last
+ * grain only moves it earlier, the rest is appended), so both joins are seamless and the pushes that follow continue the stream. The last
+ * stretch before the stream is given up fades out; the join fade then brings the next push in. Returns 1 when the tail was stretched. */
+static int stretch_tail(struct sdl_backend* b, int pass)
+{
+    static const float fac[STR_PASSES] = { 1.5f, 2.0f, 2.0f, 2.0f };
+    struct stretch_ws* w = b->sw;
+    size_t L = b->fill - b->org, total, Ylen, rem, i;
+    int Gmax = (int)(b->in_hz * 16 / 1000) & ~1, Gmin = (int)(b->in_hz / 200) & ~1;
+    int G, Hs, S, K, k, a_prev = 0, a = 0;
+    float h[1024];
+
+    if (w == NULL || L > STR_MAX_TAIL || Gmax > 1024)
+        return 0;
+    G = (int)(L / 2) < Gmax ? (int)(L / 2) : Gmax;
+    G &= ~1;
+    if (G < Gmin || G < 16)
+        return 0;
+    Hs = G / 2;
+    K = (int)((float)L * fac[pass] / (float)Hs + 0.5f) - 1;
+    if (K < 3)
+        K = 3;
+    if ((size_t)(K + 1) * Hs + Hs > STR_ACC || b->org + (size_t)(K + 2) * Hs + L > BUF_FRAMES + HIST_KEEP)
+        return 0;
+    S = (int)(b->in_hz * 6 / 1000);
+
+    for (i = 0; i < L; i++) {
+        w->src[2 * i] = b->buf[2 * (b->org + i)];
+        w->src[2 * i + 1] = b->buf[2 * (b->org + i) + 1];
+        w->mono[i] = 0.5f * (float)(w->src[2 * i] + w->src[2 * i + 1]);
+    }
+    for (i = 0; i + 4 <= L; i += 4)
+        w->mono4[i / 4] = w->mono[i] + w->mono[i + 1] + w->mono[i + 2] + w->mono[i + 3];
+    for (i = 0; i < (size_t)G; i++)
+        h[i] = 0.5f - 0.5f * cosf(6.2831853f * ((float)i + 0.5f) / (float)G);
+    for (k = 0; k < 3; k++)
+        memset(w->acc[k], 0, sizeof(float) * (size_t)(K + 2) * Hs);
+
+    for (k = 0; k < K; k++) {
+        size_t s = (size_t)k * Hs;
+        if (k > 0) {
+            int nom = (int)(((long)k * (long)(L - G) + (K - 1) / 2) / (K - 1)), lo = nom - S, hi = nom + S, c, best = nom, j, n4 = Hs / 4;
+            float bs = -1e30f;
+            const float* nat = w->mono + a_prev + Hs;
+            const float* nat4 = w->mono4 + (a_prev + Hs) / 4;
+            if (lo < 0) lo = 0;
+            if (hi > (int)L - G) hi = (int)L - G;
+            /* coarse: 4:1 box-decimated signal, every 4th start; fine: +-3 frames around the winner on the full-rate signal */
+            for (c = lo / 4; c <= hi / 4; c++) {
+                float d = 0, e = 1;
+                const float* cd = w->mono4 + c;
+                for (j = 0; j < n4; j++) { d += cd[j] * nat4[j]; e += cd[j] * cd[j]; }
+                d = d > 0 ? d / sqrtf(e) : d / sqrtf(e) * 4.0f;   /* negative matches are worse than any positive one */
+                if (d > bs) { bs = d; best = c * 4; }
+            }
+            bs = -1e30f;
+            for (c = best - 3; c <= best + 3; c++) {
+                float d = 0, e = 1;
+                const float* cd;
+                if (c < lo || c > hi) continue;
+                cd = w->mono + c;
+                for (j = 0; j < Hs; j += 2) { d += cd[j] * nat[j]; e += cd[j] * cd[j]; }
+                d = d > 0 ? d / sqrtf(e) : d / sqrtf(e) * 4.0f;
+                if (d > bs) { bs = d; best = c; }
+            }
+            a = best;
+        }
+        for (i = 0; i < (size_t)G; i++) {
+            w->acc[0][s + i] += h[i] * (float)w->src[2 * (a + i)];
+            w->acc[1][s + i] += h[i] * (float)w->src[2 * (a + i) + 1];
+            w->acc[2][s + i] += h[i];
+        }
+        a_prev = a;
+    }
+    Ylen = (size_t)(K + 1) * Hs;
+    rem = L - (size_t)(a + G);
+    total = Ylen + rem;
+    for (i = 0; i < Ylen; i++) {
+#ifdef STRETCH_MUTATE   /* test of the tests: a deliberate error (no normalisation by the window sum) that tools/run_conceal.sh must flag */
+        float l = w->acc[0][i], r = w->acc[1][i];
+#else
+        float l = w->acc[0][i] / w->acc[2][i], r = w->acc[1][i] / w->acc[2][i];
+#endif
+        b->buf[2 * (b->org + i)] = (int16_t)(l > 32767.f ? 32767 : l < -32768.f ? -32768 : l);
+        b->buf[2 * (b->org + i) + 1] = (int16_t)(r > 32767.f ? 32767 : r < -32768.f ? -32768 : r);
+    }
+    memcpy(b->buf + 2 * (b->org + Ylen), w->src + 2 * (a + G), rem * 4);
+    b->fill = b->org + total;
+    if (pass == STR_PASSES - 1) {                /* given up after this one: fade out over the second half */
+        size_t half = total / 2;
+        for (i = half; i < total; i++) {
+            int g = (int)((total - 1 - i) * 256 / (total - half));
+            b->buf[2 * (b->org + i)] = (int16_t)((b->buf[2 * (b->org + i)] * g) >> 8);
+            b->buf[2 * (b->org + i) + 1] = (int16_t)((b->buf[2 * (b->org + i) + 1] * g) >> 8);
+        }
+        b->join_fade = 1;
+    }
+    b->st_stretch++;
+    EV(b, EV_STRETCH, pass, total - L);
+    return 1;
+}
+
 /* Produces nf output frames. Callback thread (device lock held), or the emulation thread in queue mode. */
 static void render(struct sdl_backend* b, int16_t* out, size_t nf)
 {
@@ -262,45 +394,12 @@ static void render(struct sdl_backend* b, int16_t* out, size_t nf)
         }
         b->refill = 0;
         b->xfade = 1;
+        EV(b, EV_REFILL_END, ring_level(b), 0);
     }
 
     step = b->step_nom / 1000000 * (uint64_t)(1000000 + adj) + (b->step_nom % 1000000) * (uint64_t)(1000000 + adj) / 1000000;
-    {
-        size_t produced = 0, join_at = (size_t)-1;
-        int16_t join_from[2] = { b->last_frame[0], b->last_frame[1] };
-
-        for (;;) {
-            cons = b->ir->process(b->rs, b->buf + 2 * b->org, b->fill - b->org, out + 2 * produced, nf - produced, step, &got);
-            b->org += cons;
-            produced += got;
-            if (produced >= nf)
-                break;
-            /* starved: replay the last 20 ms of source instead of going silent, a few times in a row */
-            if (b->conceal && b->rep_run < MAX_REPEATS && b->org >= b->in_hz / 50 + RS_HIST && b->in_hz / 50 < HIST_KEEP - 64) {
-                b->org -= b->in_hz / 50;
-                b->rep_run++;
-                b->st_repeat++;
-                if (join_at == (size_t)-1) {
-                    join_at = produced;
-                    if (produced > 0) {
-                        join_from[0] = out[2 * (produced - 1)];
-                        join_from[1] = out[2 * (produced - 1) + 1];
-                    }
-                }
-                continue;
-            }
-            break;
-        }
-        got = produced;
-        if (join_at != (size_t)-1) {
-            size_t n = nf - join_at < 32 ? nf - join_at : 32;
-            for (i = 0; i < n && join_at + i < got; i++) {
-                int w = (int)((i + 1) * 256 / (n + 1));
-                out[2 * (join_at + i)] = (int16_t)((join_from[0] * (256 - w) + out[2 * (join_at + i)] * w) >> 8);
-                out[2 * (join_at + i) + 1] = (int16_t)((join_from[1] * (256 - w) + out[2 * (join_at + i) + 1] * w) >> 8);
-            }
-        }
-    }
+    cons = b->ir->process(b->rs, b->buf + 2 * b->org, b->fill - b->org, out, nf, step, &got);
+    b->org += cons;
 
     if (got < nf) {
         size_t fo = got < FADE_FRAMES ? got : FADE_FRAMES;
@@ -315,7 +414,8 @@ static void render(struct sdl_backend* b, int16_t* out, size_t nf)
             memset(out + 2 * got, 0, (nf - got) * 4);
         b->st_silent += nf - got;
         b->refill = 1;
-        b->rep_run = 0;
+        b->str_run = 0;
+        EV(b, EV_UNDER, got, nf);
         on_underrun(b);
     }
     else if (b->xfade && nf > 0) {
@@ -340,10 +440,31 @@ static void render(struct sdl_backend* b, int16_t* out, size_t nf)
 static void my_audio_callback(void* userdata, unsigned char* stream, int len)
 {
     struct sdl_backend* b = userdata;
-    if (!b->refill)
-        rc_update(b, ring_level(b));
+    unsigned long long t_in = now_us(), t_out;
+    if (b->last_cb_us && b->t0_us) {
+        unsigned long long gap = t_in - b->last_cb_us, per = (unsigned long long)b->period * 1000000ULL / b->out_hz;
+        if (gap > b->st_gap_max) b->st_gap_max = gap;
+        if (gap > per * 3 / 2) {   /* the thread woke up late: the device may have run dry (an xrun is a pop) */
+            b->st_late++;
+            EV(b, EV_LATE, gap, per);
+        }
+    }
+    b->last_cb_us = t_in;
+    if (!b->refill) {
+        size_t lvl = ring_level(b), trig = b->target * 3 / 4 < b->str_trig ? b->target * 3 / 4 : b->str_trig;
+        rc_update(b, lvl);
+        if (b->conceal && !b->ff_active && lvl < trig && b->str_run < STR_PASSES && stretch_tail(b, b->str_run))
+            b->str_run++;
+    }
     auto_shrink(b, now_us());
     render(b, (int16_t*)stream, (size_t)len / 4);
+    t_out = now_us();
+    if (t_out - t_in > b->st_dur_max) b->st_dur_max = t_out - t_in;
+    if (t_out - t_in > 2000) EV(b, EV_SLOW, t_out - t_in, 0);
+    if (b->tap && b->tap_n + (size_t)len / 4 <= b->tap_max) {
+        memcpy(b->tap + 2 * b->tap_n, stream, (size_t)len);
+        b->tap_n += (size_t)len / 4;
+    }
 }
 
 static void queue_pump(struct sdl_backend* b)
@@ -373,7 +494,7 @@ static int open_device(struct sdl_backend* b)
     desired.channels = 2;
     if (sec == 0) {
         sec = 256;
-        while (sec * 2 <= b->out_hz / 80)
+        while (sec * 2 <= b->out_hz / 40)   /* about 23 ms: at 11.6 ms the pipewire / pulse path dropped a quantum of the stream every few hundred ms */
             sec *= 2;
     }
     desired.samples = (Uint16)sec;
@@ -406,6 +527,7 @@ static void setup_levels(struct sdl_backend* b)
         b->tmax = b->tmin;
         set_target(b, b->tmin);
     }
+    b->str_trig = b->period + b->out_hz / 50 - b->out_hz / 200;
     b->lvl_avg = (double)b->target;
 }
 
@@ -414,7 +536,7 @@ static void reset_stream(struct sdl_backend* b)
     b->org = HIST_KEEP;
     b->fill = HIST_KEEP;
     memset(b->buf, 0, HIST_KEEP * 4);
-    b->rep_run = 0;
+    b->str_run = 0;
     if (b->rs) b->ir->reset(b->rs);
     b->refill = !b->queue_mode;
     b->dm_pos = 0;
@@ -488,6 +610,7 @@ struct sdl_backend* init_sdl_backend_from_config(m64p_handle config, ptr_CoreDoC
         free(b);
         return NULL;
     }
+    b->sw = malloc(sizeof(*b->sw));
     b->config = config;
     b->core_cmd = core_cmd;
     b->in_hz = (unsigned)ConfigGetParamInt(config, "DEFAULT_FREQUENCY");
@@ -505,6 +628,11 @@ struct sdl_backend* init_sdl_backend_from_config(m64p_handle config, ptr_CoreDoC
     b->speed_est = 1.0;
     b->gain_cur = altru_gain();
     snprintf(b->rs_id, sizeof(b->rs_id), "%s", rs_id ? rs_id : DEFAULT_RESAMPLER);
+    if (getenv("ALTRU_TAP")) {
+        b->tap_max = 48000ULL * 60;
+        b->tap = malloc(b->tap_max * 4);
+        b->ev = calloc(MAX_EV, sizeof(*b->ev));
+    }
     if (getenv("ALTRU_STATS"))
         b->trace = calloc(MAX_TRACE, sizeof(*b->trace));
 
@@ -519,7 +647,7 @@ struct sdl_backend* init_sdl_backend_from_config(m64p_handle config, ptr_CoreDoC
 static void write_stats(struct sdl_backend* b)
 {
     const char* path = getenv("ALTRU_STATS");
-    char sum[600];
+    char sum[800];
     FILE* f;
     double dur;
 
@@ -530,10 +658,10 @@ static void write_stats(struct sdl_backend* b)
     f = fopen(sum, "w");
     if (f) {
         fprintf(f, "dur_s %.1f\ncallbacks %llu\nunderrun_cb %llu\nsilent_ms %.0f\npause_events 0\npaused_ms 0\ndelay_events %llu\ndelay_ms %llu\npushes %llu\n"
-                   "out_freq %u\nin_freq %u\nsec %u\ntarget %zu\nadj_ppm %d..%d\ntarget_range %zu..%zu\ngrow %llu\noverflow_drops %llu\nff_dropped_frames %llu\nflushes %llu\nrepeats %llu\nin_frames %llu\nout_frames %llu\ngame_speed_pct %.2f\nmode %s\nresampler %s\n",
+                   "out_freq %u\nin_freq %u\nsec %u\ntarget %zu\nadj_ppm %d..%d\ntarget_range %zu..%zu\ngrow %llu\noverflow_drops %llu\nff_dropped_frames %llu\nflushes %llu\nstretches %llu\nlate_cb %llu\ncb_gap_max_us %llu\ncb_dur_max_us %llu\nin_frames %llu\nout_frames %llu\ngame_speed_pct %.2f\nmode %s\nresampler %s\n",
                 dur, b->st_cb, b->st_under, b->st_silent * 1000.0 / (b->out_hz ? b->out_hz : 1), b->st_delay_n, b->st_delay_ms, b->st_push,
                 b->out_hz, b->in_hz, b->period, b->target, b->st_adj_min, b->st_adj_max, b->st_tmin == (size_t)-1 ? 0 : b->st_tmin, b->st_tmax,
-                b->st_grow, b->st_over, b->st_ffdrop, b->st_flush, b->st_repeat, b->st_in, b->st_out, 100.0 * b->st_in / ((now_us() - b->t0_us) / 1e6) / b->in_hz, b->queue_mode ? "queue" : "callback", b->rs_id);
+                b->st_grow, b->st_over, b->st_ffdrop, b->st_flush, b->st_stretch, b->st_late, b->st_gap_max, b->st_dur_max, b->st_in, b->st_out, 100.0 * b->st_in / ((now_us() - b->t0_us) / 1e6) / b->in_hz, b->queue_mode ? "queue" : "callback", b->rs_id);
         fclose(f);
     }
     f = fopen(path, "w");
@@ -555,12 +683,31 @@ void release_sdl_backend(struct sdl_backend* b)
         SDL_CloseAudioDevice(b->device);
     }
     write_stats(b);
+    if (b->tap && getenv("ALTRU_TAP")) {
+        const char* path = getenv("ALTRU_TAP");
+        char evp[600];
+        FILE* f = fopen(path, "wb");
+        int i, n = b->ev_n < MAX_EV ? b->ev_n : MAX_EV;
+        static const char* nm[] = { "under", "stretch", "refill_end", "flush", "overflow", "delay", "freq", "ff", "drop", "late_cb", "slow_cb" };
+        if (f) { fwrite(b->tap, 4, b->tap_n, f); fclose(f); }
+        snprintf(evp, sizeof(evp), "%s.ev", path);
+        f = fopen(evp, "w");
+        if (f) {
+            fprintf(f, "out_hz %u\n", b->out_hz);
+            for (i = 0; i < n; i++)
+                fprintf(f, "%llu %s %d %d\n", b->ev[i].pos, nm[b->ev[i].type], b->ev[i].arg, b->ev[i].arg2);
+            fclose(f);
+        }
+    }
     if (SDL_WasInit(SDL_INIT_AUDIO) != 0)
         SDL_QuitSubSystem(SDL_INIT_AUDIO);
     if (SDL_WasInit(SDL_INIT_TIMER) != 0)
         SDL_QuitSubSystem(SDL_INIT_TIMER);
     if (b->rs) b->ir->release(b->rs);
     free(b->trace);
+    free(b->tap);
+    free(b->ev);
+    free(b->sw);
     free(b->buf);
     free(b);
 }
@@ -571,6 +718,7 @@ void sdl_set_frequency(struct sdl_backend* b, unsigned frequency)
 
     if (b->error != 0 || frequency == 0)
         return;
+    EV(b, EV_FREQ, frequency, b->in_hz);
     if (b->device && out == b->out_hz) {
         SDL_LockAudioDevice(b->device);
         b->in_hz = frequency;
@@ -657,6 +805,7 @@ static void flush_to_target(struct sdl_backend* b)
         skip_frames(b, avail - keep);
         b->xfade = 1;
         b->st_flush++;
+        EV(b, EV_FLUSH, avail - keep, 0);
     }
 }
 
@@ -680,7 +829,7 @@ void sdl_push_samples(struct sdl_backend* b, const void* src, size_t size)
         b->t0_us = now;
     b->st_push++;
     b->st_in += n;
-    b->rep_run = 0;
+    b->str_run = 0;
 
     ff = b->speed_pct > 100 || !core_limiter_on(b);
     measure_speed(b, n, now);
@@ -704,6 +853,7 @@ void sdl_push_samples(struct sdl_backend* b, const void* src, size_t size)
 
     if (ff != b->ff_active) {
         b->ff_active = ff;
+        EV(b, EV_FF, ff, b->speed_pct);
         b->dm_pos = 0;
         b->dm_carry_ok = 0;
         b->dm_carry_n = 0;
@@ -753,6 +903,7 @@ void sdl_push_samples(struct sdl_backend* b, const void* src, size_t size)
                     compact(b);
                     b->st_over++;
                     b->xfade = 1;
+                    EV(b, EV_COMPACT_DROP, drop, m);
                 }
             }
             if (b->join_fade && m > 0 && b->fill > b->org) {
@@ -803,6 +954,7 @@ void sdl_push_samples(struct sdl_backend* b, const void* src, size_t size)
             unsigned ms = (unsigned)((lvl - b->target - slack) * 1000 / b->out_hz);
             if (ms > 40) ms = 40;
             if (ms > 0) {
+                EV(b, EV_DELAY, ms, lvl);
                 b->st_delay_n++;
                 b->st_delay_ms += ms;
                 SDL_Delay(ms);

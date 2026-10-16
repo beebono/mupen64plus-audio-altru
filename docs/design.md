@@ -30,8 +30,13 @@ With sync off, or while fast-forwarding, a level above the maximum target is cut
 
 When the callback needs more than the buffer holds:
 
-1. **Concealment** (`CONCEAL`, default on): the read position moves back 20 ms of source and the callback goes on from there, with a 32-frame crossfade at the join. At most four times
-   between two pushes (80 ms), so a long stall is not turned into a buzz. When the core runs a few per cent slow, this inserts a 20 ms replay every few hundred ms instead of a gap.
+1. **Concealment** (`CONCEAL`, default on): a time-stretch of the buffered tail, in place, before the buffer runs dry. At the start of a callback, when the unread audio is below
+   `min(period + 15 ms, 3/4 of the target)` (and the core is not fast-forwarding), the unread tail is stretched by WSOLA (waveform-similarity overlap-add): Hann grains of 16 ms (less for a short tail), 50 % overlap,
+   written at a slower pace than they are read, each grain's start searched within +-6 ms for the best match with the natural continuation of the previous grain (coarse on a 4:1 box-decimated mono signal, then +-3 frames
+   at full rate). The pitch does not change and nothing is replayed verbatim. The output starts with the tail's first frame and ends with its last (the tail of the last grain is appended), so both joins are seamless and the
+   next push simply continues the stream. Between two pushes it can run four times, by 1.5, 2, 2 and 2 (a gap of 120 ms past the buffer is covered; the last pass fades out over its second half and the next push is
+   crossfaded in by `join_fade`). It costs 80-300 µs for a 20-60 ms tail on an A55/A53 (`tools/bench_stretch.c`, scalar float; NEON would not pay for an event that happens a few times in 40 s). The replay of the last
+   20 ms that this replaced (four times in a row) sounded like a stuck program.
 2. **Silence**: the rest of the callback is silent (the last 64 frames before it fade out), the device keeps running, and the output stays silent until the level is back to half the
    target (at least one period). The next audio fades in from the last frame. This counts as an underrun and grows the automatic buffer.
 
@@ -39,7 +44,7 @@ When the callback needs more than the buffer holds:
 
 `BUFFER_MODE = 0` (automatic): the target starts at the minimum plus 40 ms (one period plus 20 ms, plus 40 ms), grows by 25 ms on each underrun (up to 300 ms), and shrinks by 5 ms every 5 s once
 10 s have passed without an underrun. `BUFFER_MODE = 1`: the target is `BUFFER_MS` and stays. The SDL period (`SECONDARY_BUFFER_SIZE`, a power of two) is picked at device open:
-0 means the power of two nearest below `output rate / 80` (512 frames at 44100 Hz, 256 at 22050 Hz, about 11.6 ms), otherwise the configured value.
+0 means the power of two nearest below `output rate / 40` (1024 frames at 44100 Hz, 512 at 22050 Hz, 256 at 11025 Hz, about 23 ms; 11.6 ms periods made the pipewire path of the rgdsplus drop one 2.7 ms quantum of the stream every few hundred ms, which is audible as popping, see [testing.md](testing.md#popping-on-the-rgdsplus)), otherwise the configured value.
 
 ## Fast-forward
 

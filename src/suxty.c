@@ -44,7 +44,7 @@ static const struct altru_suxty_option l_options[OPT_COUNT] = {
     [OPT_RESAMPLER]   = { "RESAMPLE", "Resampler", "Sample rate conversion method.", ALTRU_OPT_ENUM, ALTRU_OPTF_LIVE, 0, RS_COUNT - 1, 1, rs_labels, 0 },
     [OPT_BUFFER_MODE] = { "BUFFER_MODE", "Buffer Size", "Automatic grows on underruns and shrinks slowly; fixed uses Buffer Length.", ALTRU_OPT_ENUM, 0, 0, 1, 1, buf_labels, 0 },
     [OPT_BUFFER_MS]   = { "BUFFER_MS", "Buffer Length", "Fixed buffer level in milliseconds.", ALTRU_OPT_INT, 0, 20, 300, 10, NULL, 60 },
-    [OPT_CONCEAL]     = { "CONCEAL", "Underrun Concealment", "Replay the last 20 ms instead of going silent when the core falls behind.", ALTRU_OPT_BOOL, ALTRU_OPTF_LIVE, 0, 1, 1, NULL, 1 },
+    [OPT_CONCEAL]     = { "CONCEAL", "Underrun Concealment", "Stretch the audio left in the buffer (pitch kept) instead of going silent when the core falls behind.", ALTRU_OPT_BOOL, ALTRU_OPTF_LIVE, 0, 1, 1, NULL, 1 },
 };
 
 static int l_ov_set[OPT_COUNT], l_ov_val[OPT_COUNT];

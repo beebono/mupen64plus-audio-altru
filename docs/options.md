@@ -10,18 +10,18 @@ Keys given with `--set Audio-Altru[...]` before the start are kept. `Audio-SDL` 
 |---|---|---|
 | `DEFAULT_FREQUENCY` | 33600 | rate used until the game sets one |
 | `SWAP_CHANNELS` | False | swap left and right |
-| `SECONDARY_BUFFER_SIZE` | 0 | SDL device period in output samples (a power of two); 0 = automatic, about 12 ms |
+| `SECONDARY_BUFFER_SIZE` | 0 | SDL device period in output samples (a power of two); 0 = automatic, about 23 ms (1024 at 44100 Hz; see [design.md](design.md#buffer-size)) |
 | `RESAMPLE` | poly | `poly`, `trivial`; with `USE_SPEEX=1` `speex-fixed-{0-10}`; with `USE_SRC=1` `src-*` ([resampler.md](resampler.md)) |
 | `BUFFER_MODE` | 0 | 0 = automatic buffer size, 1 = fixed ([design.md](design.md#buffer-size)) |
 | `BUFFER_MS` | 60 | buffer level in milliseconds in fixed mode |
 | `AUDIO_SYNC` | True | delay the core when it is far ahead of the audio clock (backstop only) |
-| `CONCEAL` | True | replay the last 20 ms when the core falls behind, before going silent |
+| `CONCEAL` | True | time-stretch the audio left in the buffer (pitch kept) when the core falls behind, before fading to silence ([design.md](design.md#underruns)) |
 | `FF_MODE` | 0 | fast-forward audio: 0 = normal pitch, 1 = muted |
 | `RATE_ADJUST_PPM` | 5000 | largest resample ratio change of the rate control (5000 = 0.5 %) |
 | `OUTPUT_MODE` | 0 | 0 = SDL callback, 1 = `SDL_QueueAudio` (experimental) |
 | `VOLUME_ADJUST`, `VOLUME_DEFAULT` | 5, 80 | volume step, start volume (percent) |
 
-Environment: `ALTRU_STATS=<file>` writes the counters and the buffer trace when the ROM closes ([design.md](design.md#statistics)).
+Environment: `ALTRU_STATS=<file>` writes the counters and the buffer trace when the ROM closes ([design.md](design.md#statistics)); `ALTRU_TAP=<file>` (debugging) writes the output stream as raw S16 stereo (up to 60 s) and `<file>.ev`, an event log (underrun, stretch, refill end, flush, drop, delay, rate change, late or slow callback) with the output frame of each.
 
 ## suxty interface
 
