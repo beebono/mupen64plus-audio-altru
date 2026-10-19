@@ -28,7 +28,7 @@ over; `Audio-SDL` is never modified. All keys: [docs/options.md](docs/options.md
 ```sh
 scripts/build.sh native                   # host gcc -> out/native/
 SDL2_LIBDIR=<dir with the device's libSDL2-2.0.so.0> scripts/build.sh aarch64      # rgdsplus (ROCKNIX)
-scripts/build.sh rg35xxsp                 # glibc 2.31 sysroot (../toolchains/rg35xxsp), runs on both devices; or toolchains/rg35xxsp/build.sh altru
+scripts/build.sh rg35xxsp                 # glibc 2.31 sysroot (../../../resources/toolchains/rg35xxsp), runs on both devices; or resources/toolchains/rg35xxsp/build.sh altru
 scripts/check.sh                          # host tests
 ```
 

@@ -7,7 +7,7 @@
 #   quality: passband / SNR / image numbers (needs numpy, scipy)
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
-API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
+API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core-dento/src/api}
 W=$R/work/check; mkdir -p "$W"
 CAP=(systemd-run --user --scope -q -p MemoryMax=2G -p MemorySwapMax=0 timeout -s KILL 300)
 SRC=("$R"/src/resamplers/resamplers.c "$R"/src/resamplers/poly.c "$R"/src/resamplers/trivial.c)

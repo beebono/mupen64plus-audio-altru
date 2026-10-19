@@ -95,7 +95,7 @@ endif
 
 SRCDIR = ../../src
 # BUNDLE=1: static archive for the single-binary bundle (symbols prefixed altru_)
-BUNDLEDIR ?= ../../../mupen64plus-pow2/bundle
+BUNDLEDIR ?= $(firstword $(wildcard ../../../../bundle ../../../mupen64plus-pow2/bundle))
 ifeq ($(BUNDLE), 1)
   POSTFIX := $(POSTFIX)-bundle
 endif
@@ -192,7 +192,7 @@ LDLIBS += -lm -lpthread
 ifneq ("$(APIDIR)","")
   CFLAGS += "-I$(APIDIR)"
 else
-  TRYDIR = ../../../mupen64plus-core/src/api
+  TRYDIR = ../../../mupen64plus-core-dento/src/api
   ifneq ("$(wildcard $(TRYDIR)/m64p_types.h)","")
     CFLAGS += -I$(TRYDIR)
   else

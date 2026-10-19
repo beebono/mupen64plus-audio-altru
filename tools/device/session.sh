@@ -2,7 +2,7 @@
 # ON THE DEVICE (rg35xxsp or rgdsplus).  One measurement session of the audio plugin(s): idle check, clocks pinned and restored, the runs.
 #   session.sh rg35|rgds SECS COND:GAME ...        GAME = jfg ppl swr ewj sm64, COND = the suffix of plug/mupen64plus-audio-<COND>.so
 # Layout under $D (default /mnt/sdcard/n64-dev/altru, /storage/altru-dev): plug/ (audio plugins as above, mupen64plus-rdp-foir.so,
-# mupen64plus-rsp-armlet.so, mupen64plus-input-mash.so from mashinput.c), roms/ (rgds only), cpu_perf.sh (rg35 only, toolchains/rg35xxsp/scripts),
+# mupen64plus-rsp-armlet.so, mupen64plus-input-mash.so from mashinput.c), roms/ (rgds only), cpu_perf.sh (rg35 only, resources/toolchains/rg35xxsp/scripts),
 # sm64.st (optional save state), extra.<COND> (extra mupen64plus arguments for that plugin, e.g. --set Audio-Altru[VOLUME_DEFAULT]=10).
 # Env: GEXTRA (extra arguments for all runs), MASH_FF (see mashinput.c), FOIR_FRAMESKIP, ALTRU_STATS is set per run.
 # Every run has its own private HOME / XDG / configdir (cfg-<COND>) under $D. Results: $D/out/<tag>.csv (buffer trace), .csv.sum (counters), .log.

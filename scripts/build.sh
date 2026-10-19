@@ -2,12 +2,12 @@
 # Builds mupen64plus-audio-altru.so from a copy of the sources (work/<target>/), so a tree that is being edited does not matter.
 #   scripts/build.sh native|aarch64|rg35xxsp [make variables...]    -> out/<target>/mupen64plus-audio-altru.so
 # native: host gcc; aarch64: aarch64-linux-gnu-* with the host SDL2 headers (rgdsplus, ROCKNIX, glibc 2.44);
-# rg35xxsp: $RG35_TOOLCHAIN (default ../toolchains/rg35xxsp): glibc 2.31 sysroot, SDL 2.30.9 link stub (the device has the mali SDL 2.28.5);
+# rg35xxsp: $RG35_TOOLCHAIN (default ../../../resources/toolchains/rg35xxsp, relative to this repo): glibc 2.31 sysroot, SDL 2.30.9 link stub (the device has the mali SDL 2.28.5);
 # its output needs glibc <= 2.17 and runs on both devices. USE_SPEEX=1 / USE_SRC=1 add the optional resamplers (libspeexdsp / libsamplerate).
 set -e
 R=$(cd "$(dirname "$0")/.." && pwd)
-API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core/src/api}
-RG35=${RG35_TOOLCHAIN:-$R/../toolchains/rg35xxsp}
+API=${M64P_API_INCLUDE_DIR:-$R/../mupen64plus-core-dento/src/api}
+RG35=${RG35_TOOLCHAIN:-$R/../../../resources/toolchains/rg35xxsp}
 target=$1; shift || true
 W=$R/work/$target; OUT=$R/out/$target
 case $target in
