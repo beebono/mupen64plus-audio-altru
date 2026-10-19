@@ -94,13 +94,22 @@ ifeq ("$(CPU)","OTHER")
 endif
 
 SRCDIR = ../../src
+# BUNDLE=1: static archive for the single-binary bundle (symbols prefixed altru_)
+BUNDLEDIR ?= ../../../mupen64plus-pow2/bundle
+ifeq ($(BUNDLE), 1)
+  POSTFIX := $(POSTFIX)-bundle
+endif
 OBJDIR = _obj$(POSTFIX)
 
 # base CFLAGS, LDLIBS, and LDFLAGS
 OPTFLAGS ?= -O3 -flto
 WARNFLAGS ?= -Wall
 CFLAGS += $(OPTFLAGS) $(WARNFLAGS) -ffast-math -fvisibility=hidden -I$(SRCDIR)
-LDFLAGS += $(SHARED)
+ifeq ($(BUNDLE), 1)
+  CFLAGS += -include $(BUNDLEDIR)/rename-altru.h
+else
+  LDFLAGS += $(SHARED)
+endif
 
 # Since we are building a shared library, we must compile with -fPIC on some architectures
 # On 32-bit x86 systems we do not want to use -fPIC because we don't have to and it has a big performance penalty on this arch
@@ -266,7 +275,11 @@ OBJDIRS = $(dir $(OBJECTS))
 $(shell $(MKDIR) $(OBJDIRS))
 
 # build targets
-TARGET = mupen64plus-audio-altru$(POSTFIX).$(SO_EXTENSION)
+ifeq ($(BUNDLE), 1)
+  TARGET = libaltru.a
+else
+  TARGET = mupen64plus-audio-altru$(POSTFIX).$(SO_EXTENSION)
+endif
 
 targets:
 	@echo "Mupen64Plus-audio-sdl makefile. "
@@ -284,6 +297,7 @@ targets:
 	@echo "    PIC=(1|0)     == Force enable/disable of position independent code"
 	@echo "    USE_SRC=1     == also build the src-* resamplers (libsamplerate)"
 	@echo "    USE_SPEEX=1   == also build the speex-* resamplers (libspeexdsp)"
+	@echo "    BUNDLE=1      == build libaltru.a for the static single-binary bundle (renamed symbols)"
 	@echo "    POSTFIX=name  == String added to the name of the the build (default: '')"
 	@echo "  Install Options:"
 	@echo "    PREFIX=path   == install/uninstall prefix (default: /usr/local)"
@@ -317,7 +331,14 @@ CFLAGS += -MD -MP
 $(OBJDIR)/%.o: $(SRCDIR)/%.c
 	$(COMPILE.c) -o $@ $<
 
+ifeq ($(BUNDLE), 1)
+$(TARGET): $(OBJECTS)
+	@echo '    AR  '$@
+	@$(RM) $@
+	@$(CROSS_COMPILE)$(if $(AR_LTO),$(AR_LTO),ar) rcs $@ $^
+else
 $(TARGET): $(OBJECTS)
 	$(LINK.o) $^ $(LOADLIBES) $(LDLIBS) -o $@
+endif
 
 .PHONY: all clean install uninstall targets
